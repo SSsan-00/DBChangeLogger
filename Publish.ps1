@@ -8,7 +8,7 @@ if (-not $DemoOnly) {
         throw 'Configure\PrivateConnections.example.txt を PrivateConnections.local.cs としてコピーし、接続文字列を入力してください。'
     }
     dotnet run --project Configure\Configure.csproj -c Release -- $encrypted
-    if ($LASTEXITCODE -ne 0) { throw '暗号化設定の生成に失敗したため、配布ZIPは更新していません。' }
+    if ($LASTEXITCODE -ne 0) { throw '接続確認または暗号化設定の生成に失敗したため、配布ZIPは更新していません。以前のZIPを配布しないでください。' }
 } elseif (Test-Path -LiteralPath $encrypted) {
     Remove-Item -LiteralPath $encrypted
 }
@@ -28,7 +28,7 @@ $sourceFiles = @(
     'App\App.csproj', 'App\Program.cs',
     'Core\Core.csproj', 'Core\Engine.cs', 'Core\DemoEvidence.cs', 'Core\ConnectionSettings.cs', 'Core\TableCatalog.cs', 'Core\SessionStore.cs',
     'Configure\Configure.csproj', 'Configure\Program.cs', 'Configure\PrivateConnections.example.txt',
-    'Tests\Tests.csproj', 'Tests\DatabaseIntegrationTests.cs', 'Tests\EvidenceTests.cs', 'Tests\ExcelArtifactTests.cs', 'Tests\ConnectionSettingsTests.cs', 'Tests\LargeTableTests.cs', 'Tests\TableCatalogTests.cs', 'Tests\SessionStoreTests.cs',
+    'Tests\Tests.csproj', 'Tests\DatabaseIntegrationTests.cs', 'Tests\EvidenceTests.cs', 'Tests\ExcelArtifactTests.cs', 'Tests\ConnectionSettingsTests.cs', 'Tests\ConfigureTests.cs', 'Tests\LargeTableTests.cs', 'Tests\TableCatalogTests.cs', 'Tests\SessionStoreTests.cs',
     'README.md', 'INSTALL.md', 'WINDOWS-VERIFICATION.md', 'BENCHMARK-100M.md', 'test-databases.sh', 'Publish.ps1', 'global.json', '.gitignore'
 )
 Add-Type -AssemblyName System.IO.Compression

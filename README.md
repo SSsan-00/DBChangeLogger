@@ -139,4 +139,4 @@ dotnet test Tests/Tests.csproj --filter "TestCategory=ExcelArtifact"
 
 `Configure/PrivateConnections.local.cs` と `Configure/bin`・`Configure/obj` には平文の接続情報が含まれます。これらを共有しないでください。Publish.ps1のソースZIPは許可したファイルだけを収録し、実設定ソース・ビルド成果物・暗号化設定を除外します。ソースフォルダー全体をそのままZIP化しないでください。
 
-実DBへの接続確認は、あなたが接続情報を入力した後に行います。設定生成時にはDBへ接続しません。
+通常の `Publish.ps1` は暗号化設定の生成前に、両DBへの接続とテーブル一覧の読み取りを確認します。各DBで最大30秒、どちらか失敗したら既存設定と配布ZIPを更新しません。接続情報を含み得る例外本文は表示しません。`-DemoOnly` はDBへ接続せず確認用ビルドを作ります。作成者PCで成功しても、利用者PCのネットワーク・Windows認証の権限は別途確認してください。
