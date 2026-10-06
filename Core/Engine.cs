@@ -147,7 +147,7 @@ public static class Engine {
  }
  static string Visible(string? value) => value==null?"〈NULL〉":value.Length==0?"〈空文字〉":value.Replace("\r","\\r").Replace("\n","\\n").Replace("\t","\\t");
  public static (string Html,string Text,string SpreadsheetXml) Render(string[] columns,List<Evidence> evidence,TableSpec spec,Snapshot pb,Snapshot pa,Snapshot sb,Snapshot sa,bool spreadsheetOnly=false,CancellationToken cancellationToken=default) {
- if(evidence.Sum(e=>(long)(e.Pg.Operation!="変更なし"?1:0)+(e.Sql.Operation!="変更なし"?1:0))+2+(spec.Ignored.Length>0?1:0)+(spec.Columns is {Length:>0}?1:0)>1048576||columns.Length+4>16384)throw new InvalidOperationException(ExcelLimitError);
+ if(evidence.Sum(e=>(long)(e.Pg.Operation!="変更なし"?1:0)+(e.Sql.Operation!="変更なし"?1:0)+1)+2+(spec.Ignored.Length>0?1:0)+(spec.Columns is {Length:>0}?1:0)>1048576||columns.Length+3>16384)throw new InvalidOperationException(ExcelLimitError);
  // Excelの推測による日付・数値・数式への変換を防ぐため、DataのString型と書式@を両方維持する。
  // ここに追加した上部の行は、直前のExcel行数上限チェックにも反映する。
  XNamespace ss="urn:schemas-microsoft-com:office:spreadsheet";
@@ -174,11 +174,15 @@ public static class Engine {
  Row(new[]{($"対象: {spec.Name}"+condition,"#ffffff"),("変更行: "+evidence.Count,"#ffffff"),("不一致: "+evidence.Count(x=>!x.Match),"#ffffff"),($"PostgreSQL: 追加 {evidence.Count(e=>e.Pg.Operation=="追加")}件 / 更新 {evidence.Count(e=>e.Pg.Operation=="更新")}件 / 削除 {evidence.Count(e=>e.Pg.Operation=="削除")}件","#ffffff"),($"SQL Server: 追加 {evidence.Count(e=>e.Sql.Operation=="追加")}件 / 更新 {evidence.Count(e=>e.Sql.Operation=="更新")}件 / 削除 {evidence.Count(e=>e.Sql.Operation=="削除")}件","#ffffff")});
  if(spec.Columns is {Length:>0})Row(new[]{("取得列: "+string.Join(", ",columns),"#ffffff")});
  if(spec.Ignored.Length>0)Row(new[]{("除外列: "+string.Join(", ",spec.Ignored),"#ffffff")});
- Row(new[]{"DB","操作","変更列","判定"}.Concat(columns).Select(c=>(c,"#d9e2f3")));
- foreach(var e in evidence) foreach(var (db,c) in new[]{("PostgreSQL",e.Pg),("SQL Server",e.Sql)}) {
+ Row(new[]{"DB","操作","変更列"}.Concat(columns).Select(c=>(c,"#d9e2f3")));
+ foreach(var e in evidence) {
+ foreach(var (db,c) in new[]{("PostgreSQL",e.Pg),("SQL Server",e.Sql)}) {
  // 削除行は識別できるよう主キーだけ操作前の値を残す。他列は操作後に行がないことを表す。
  if(c.Operation=="変更なし")continue;var values=c.After;
- Row(new[]{(db,"#ffffff"),(c.Operation,c.Operation=="追加"?"#e2f0d9":c.Operation=="削除"?"#dddddd":"#ffffff"),(string.Join(", ",c.Changed.Select(i=>columns[i])),"#ffffff"),(e.Match?"一致":"不一致",e.Match?"#ffffff":"#ffc7ce")}.Concat(columns.Select((col,i)=>(values==null?(spec.Keys.Contains(col,StringComparer.OrdinalIgnoreCase)?Visible(c.Before?[i]):"〈行なし〉"):Visible(values[i]),e.Different.Contains(i)?"#ffc7ce":c.Changed.Contains(i)?"#fff2cc":"#ffffff")))); }
+ Row(new[]{(db,"#ffffff"),(c.Operation,c.Operation=="追加"?"#e2f0d9":c.Operation=="削除"?"#dddddd":"#ffffff"),(string.Join(", ",c.Changed.Select(i=>columns[i])),"#ffffff")}.Concat(columns.Select((col,i)=>(values==null?(spec.Keys.Contains(col,StringComparer.OrdinalIgnoreCase)?Visible(c.Before?[i]):"〈行なし〉"):Visible(values[i]),e.Different.Contains(i)?"#ffc7ce":c.Changed.Contains(i)?"#fff2cc":"#ffffff")))); }
+ // 変更されていない列の既存差は比較対象外。「一致」と誤認させないよう「変更なし」と表示する。
+ Row(new[]{("列判定","#d9e2f3"),("","#ffffff"),("","#ffffff")}.Concat(columns.Select((col,i)=>(spec.Ignored.Contains(col,StringComparer.OrdinalIgnoreCase)?"除外":e.Different.Contains(i)?"不一致":e.Pg.Changed.Contains(i)||e.Sql.Changed.Contains(i)?"一致":"変更なし",e.Different.Contains(i)?"#ffc7ce":"#ffffff"))));
+ }
  if(!spreadsheetOnly)html.Append("</table></body></html>");
  writer.WriteEndElement();writer.WriteEndElement();writer.WriteEndElement();writer.Flush();
  return(spreadsheetOnly?"":html.ToString(),text.ToString(),"<?xml version=\"1.0\" encoding=\"utf-8\"?>"+xml);
