@@ -180,8 +180,8 @@ public static class Engine {
  // 削除行は識別できるよう主キーだけ操作前の値を残す。他列は操作後に行がないことを表す。
  if(c.Operation=="変更なし")continue;var values=c.After;
  Row(new[]{(db,"#ffffff"),(c.Operation,c.Operation=="追加"?"#e2f0d9":c.Operation=="削除"?"#dddddd":"#ffffff"),(string.Join(", ",c.Changed.Select(i=>columns[i])),"#ffffff")}.Concat(columns.Select((col,i)=>(values==null?(spec.Keys.Contains(col,StringComparer.OrdinalIgnoreCase)?Visible(c.Before?[i]):"〈行なし〉"):Visible(values[i]),e.Different.Contains(i)?"#ffc7ce":c.Changed.Contains(i)?"#fff2cc":"#ffffff")))); }
- // 変更されていない列の既存差は比較対象外。「一致」と誤認させないよう「変更なし」と表示する。
- Row(new[]{("列判定","#d9e2f3"),("","#ffffff"),("","#ffffff")}.Concat(columns.Select((col,i)=>(spec.Ignored.Contains(col,StringComparer.OrdinalIgnoreCase)?"除外":e.Different.Contains(i)?"不一致":e.Pg.Changed.Contains(i)||e.Sql.Changed.Contains(i)?"一致":"変更なし",e.Different.Contains(i)?"#ffc7ce":"#ffffff"))));
+ // 判定対象は変更列。変更されていない列も仕様上は◯とし、除外列だけは一致扱いにしない。
+ Row(new[]{("判定","#d9e2f3"),("","#ffffff"),("","#ffffff")}.Concat(columns.Select((col,i)=>spec.Ignored.Contains(col,StringComparer.OrdinalIgnoreCase)?("除外","#ffffff"):e.Different.Contains(i)?("×","#ffc7ce"):("◯","#e2f0d9"))));
  }
  if(!spreadsheetOnly)html.Append("</table></body></html>");
  writer.WriteEndElement();writer.WriteEndElement();writer.WriteEndElement();writer.Flush();

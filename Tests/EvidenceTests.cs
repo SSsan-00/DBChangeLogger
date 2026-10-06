@@ -71,19 +71,21 @@ public sealed class EvidenceTests
         var xml=XDocument.Parse(Engine.Render(d.PgBefore.Columns,changes,d.Spec,d.PgBefore,d.PgAfter,d.SqlBefore,d.SqlAfter).SpreadsheetXml);
         XNamespace ss="urn:schemas-microsoft-com:office:spreadsheet";
         var allRows=xml.Descendants(ss+"Row").Skip(3).Select(r=>r.Descendants(ss+"Data").Select(c=>c.Value).ToArray()).ToArray();
-        var rows=allRows.Where(r=>r[0]!="列判定").ToArray();
+        var rows=allRows.Where(r=>r[0]!="判定").ToArray();
         var headers=xml.Descendants(ss+"Row").ElementAt(2).Descendants(ss+"Data").Select(c=>c.Value).ToArray();
         CollectionAssert.AreEqual(new[]{"DB","操作","変更列"}.Concat(d.PgBefore.Columns).ToArray(),headers);
         Assert.IsFalse(headers.Contains("主キー")||headers.Contains("時点"));
         Assert.AreEqual(11,rows.Length);Assert.IsTrue(rows.All(r=>r[1]!="変更なし"));
         Assert.AreEqual(1,rows.Count(r=>r[3]=="5"));
         Assert.IsTrue(rows.Where(r=>r[1]=="削除").All(r=>r[3]=="2"&&r.Skip(4).All(v=>v=="〈行なし〉")));
-        var judgments=allRows.Where(r=>r[0]=="列判定").ToArray();
+        var judgments=allRows.Where(r=>r[0]=="判定").ToArray();
         Assert.AreEqual(6,judgments.Length);
-        CollectionAssert.AreEqual(new[]{"変更なし","一致","一致"},judgments[0].Skip(3).Take(3).ToArray());
-        Assert.AreEqual("不一致",judgments[2][5]); // id=4のamountが41 / 42。
-        Assert.AreEqual("不一致",judgments[3][5]); // id=5はPGのみ更新。
+        CollectionAssert.AreEqual(new[]{"◯","◯","◯"},judgments[0].Skip(3).Take(3).ToArray());
+        Assert.AreEqual("×",judgments[2][5]); // id=4のamountが41 / 42。
+        Assert.AreEqual("×",judgments[3][5]); // id=5はPGのみ更新。
         Assert.IsTrue(judgments.All(r=>r[8]=="除外")); // stamp。
+        foreach(var cell in xml.Descendants(ss+"Row").Where(r=>r.Element(ss+"Cell")?.Element(ss+"Data")?.Value=="判定").SelectMany(r=>r.Elements(ss+"Cell").Skip(3)))
+            Assert.AreEqual(cell.Element(ss+"Data")!.Value switch {"◯"=>"Ce2f0d9","×"=>"Cffc7ce",_=>"Cffffff"},(string?)cell.Attribute(ss+"StyleID"));
     }
 
     [TestMethod]
