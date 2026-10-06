@@ -1,0 +1,10 @@
+namespace DbEvidenceConfigure;
+// あなたのPCだけに保存。接続情報を入力して Publish.ps1 を実行してください。
+// PostgreSQL例: Host=server;Database=db;Username=user;Password=password;SSL Mode=VerifyFull
+// SQL Server例: Server=server;Database=db;User ID=user;Password=password;Encrypt=True;TrustServerCertificate=False
+// Windows認証の場合は User ID/Password の代わりに Integrated Security=True。
+internal static class PrivateConnections
+{
+    internal static readonly string Postgres = "";
+    internal static readonly string SqlServer = "";
+}

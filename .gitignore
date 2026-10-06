@@ -1,0 +1,11 @@
+**/bin/
+**/obj/
+artifacts/
+*.local.cs
+*.dpapi
+
+connections.enc
+session.bin
+*.log
+*.xlsx
+*.xlsm

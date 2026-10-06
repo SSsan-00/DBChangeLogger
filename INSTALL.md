@@ -1,0 +1,148 @@
+# DBChangeLogger 導入手順
+
+PostgreSQLとSQL Serverの操作前・操作後を比較し、変更があった行の最終状態をExcelに出力するWindowsツールです。DBへのデータ変更は行いません。
+
+## どこから始めるか
+
+| 利用するもの | 次に行うこと |
+|---|---|
+| GitHubの公開Release | 「画面と出力だけ試す」へ。接続設定は入っていません。 |
+| 自分で接続先を設定する | 「作成者：接続設定と社内配布」へ。 |
+| 作成者から設定済みZIPを受け取った | 「利用者：起動からExcel保存まで」へ。接続情報の入力は不要です。 |
+
+## 必要な環境
+
+- 利用者：Windows x64、デスクトップ版Microsoft Excel、両DBへ接続できる社内ネットワーク。
+- 作成者：上記に加え、.NET SDK 9.0、PowerShell、ソースコード。初回ビルドではNuGetのパッケージを取得できる必要があります。
+- DB：PostgreSQLの `public` とSQL Serverの `dbo` に同じ名前のテーブルがあり、対応する主キーと列が定義されていること。接続アカウントに対象テーブルのSELECT権限が必要です。
+
+アプリはZIPを展開して実行します。アプリのインストールや実行に管理者権限は不要です。利用者のPCには.NETランタイムを別途インストールする必要はありません。SDKの導入や会社の実行制限については社内の運用に従ってください。
+
+## 画面と出力だけ試す
+
+1. GitHubの[Releases](https://github.com/SSsan-00/DBChangeLogger/releases)から `DBChangeLogger-Windows-x64.zip` をダウンロードします。
+2. ZIPを右クリックし「すべて展開」で、書き込み可能なフォルダーへ展開します。ZIPの中から直接起動しないでください。
+3. 展開先でPowerShellを開き、次を実行します。
+
+   ```powershell
+   .\DBChangeLogger.exe --demo
+   ```
+
+4. 「エビデンスをコピー」を押し、ExcelのA1セルでCtrl+Vを押します。
+5. Excelで `.xlsx` として保存します。
+
+両DBで同じ1件を更新したケースなので、データ部分は次の2行になります。amountの15が黄色になります。実DBには接続しません。
+
+| DB | 操作 | 変更列 | 判定 | id | name | amount |
+|---|---|---|---|---|---|---|
+| PostgreSQL | 更新 | amount | 一致 | 1 | 商品A | 15 |
+| SQL Server | 更新 | amount | 一致 | 1 | 商品A | 15 |
+
+## 作成者：接続設定と社内配布
+
+### 1. ソースを取得する
+
+Gitがある場合は、PowerShellで次を実行します。
+
+```powershell
+git clone https://github.com/SSsan-00/DBChangeLogger.git
+cd DBChangeLogger
+```
+
+GitがなければGitHubの「Code」→「Download ZIP」で取得し、展開先の `Publish.ps1` があるフォルダーでPowerShellを開きます。
+
+### 2. 自分のPCだけに接続設定を作る
+
+```powershell
+Copy-Item .\Configure\PrivateConnections.example.txt .\Configure\PrivateConnections.local.cs
+```
+
+既に `.local.cs` がある場合は上書きせず、そのファイルを編集してください。`Postgres` と `SqlServer` の空文字列に接続情報を入力して保存します。以下は架空の値です。
+
+```csharp
+internal static readonly string Postgres = "Host=pg.example.internal;Port=5432;Database=sample;Username=reader;Password=YOUR_PASSWORD;SSL Mode=VerifyFull";
+internal static readonly string SqlServer = "Server=sql.example.internal;Database=sample;User ID=reader;Password=YOUR_PASSWORD;Encrypt=True;TrustServerCertificate=False";
+```
+
+サーバー名、DB名、アカウント、パスワード、TLS設定は、現在利用できるDB環境に合わせます。C#の通常の文字列では、値に含まれる `\` は `\\`、`"` は `\"` と記述します。接続文字列にセミコロンなどがあるパスワードは、DBドライバーの接続文字列規則に従って引用してください。
+
+SQL ServerのWindows認証を使う場合は、次のようにします。
+
+```csharp
+internal static readonly string SqlServer = "Server=sql.example.internal;Database=sample;Integrated Security=True;Encrypt=True;TrustServerCertificate=False";
+```
+
+Windows認証では、利用者自身のWindowsアカウントで接続するため、各利用者にDB権限が必要です。作成者のアカウントを共有する方式ではありません。証明書の検証エラーが出る場合は、会社の正しい証明書・接続名を確認してください。
+
+### 3. 配布ZIPを作る
+
+SDKを確認してからビルドします。
+
+```powershell
+dotnet --version
+.\Publish.ps1
+```
+
+PowerShellの実行ポリシーでスクリプトが拒否される場合、社内で許可されていれば、その起動だけに適用する次のコマンドを使えます。
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\Publish.ps1
+```
+
+「artifactsにWindows配布ZIPとソースZIPを作成しました。」と表示されたら完了です。接続設定の形式を検証して暗号化しますが、この段階ではDB接続確認は行いません。
+
+作成される `artifacts\DBChangeLogger-Windows-x64.zip` を、社内の共有相手へ渡します。接続確認は展開したアプリの「テーブル一覧」を読み込むことで行えます。
+
+| 配布物 | 用途 |
+|---|---|
+| DBChangeLogger.exe | アプリ本体、.NETランタイム同梱 |
+| Microsoft.Data.SqlClient.SNI.dll | SQL Server接続に必要なDLL |
+| connections.enc | 暗号化した接続設定。社内配布版のみ |
+| README.md / INSTALL.md など | 利用手順・仕様・検証記録 |
+
+EXEだけでなく、ZIPの内容をまとめて渡してください。接続先を変更するときも、`.local.cs` を編集して再度ビルドし、更新したZIPを渡します。ビルド失敗時は以前のZIPが残るため、成功メッセージを確認してください。
+
+### 公開用ビルドを作る場合
+
+```powershell
+.\Publish.ps1 -DemoOnly
+```
+
+このZIPには `connections.enc` を含めません。公開Releaseにはこの確認用ZIPを使います。通常の `.\Publish.ps1` で作った設定済みZIPをGitHubへアップロードしないでください。
+
+`.local.cs`、`connections.enc`、`bin` / `obj`、`artifacts`、セッション保存データ、実DBのエビデンスは公開対象に含めません。Gitの除外設定があっても、手動のアップロードや `git add -f` は避けてください。
+
+接続設定は平文の見えやすさを避けるための簡易的な秘匿です。復号鍵はアプリと公開ソースに含まれるため、設定済み配布物を解析できる人から接続情報を完全に隠すことはできません。設定済みZIPの共有範囲は社内に限定してください。
+
+## 利用者：起動からExcel保存まで
+
+1. 作成者から受け取った設定済みZIPを展開し、`DBChangeLogger.exe` を起動します。接続情報は入力しません。
+2. 「テーブル一覧」から比較するテーブルを選びます。1回に比較するのは1テーブルです。
+3. 必要に応じて取得列・除外列をカンマ区切りで入力します。取得列が空欄なら全列、主キー列は自動で含めます。
+4. 検索条件の各行で検索列・条件・型・値を指定します。「＋ 条件を追加」で増やせます。AND／ORは混在できますが、ANDが優先されます。検索列が空欄の行は無視し、すべて空欄なら全件取得です。
+5. 「操作前を取得」を押し、件数と取得完了を確認します。大量の場合は「中断」し、条件を絞ってやり直せます。
+6. 比較対象のシステムで両DBに同じ操作を行い、コミットや非同期処理の完了を待ちます。
+7. 「操作後を取得・比較」を押します。途中の更新履歴ではなく、操作前から最終状態までの差分を表示します。繰り返しても、操作前を取り直さない限り同じ基準で結果を置き換えます。
+8. 「エビデンスをコピー」→Excelの貼り付け先セル→Ctrl+Vで貼り付けます。「値のみ」や「テキストのみ」は使わないでください。
+9. 必要ならExcelで列幅を調整し、`.xlsx` で保存します。
+
+エビデンスの先頭にDB別の追加・更新・削除件数を表示します。取得列・除外列は指定した場合だけ表示します。両DBが同じ1件を更新した場合は2行、片側だけ更新した場合は変更側だけを不一致として出力します。削除は主キー値と `〈行なし〉` で示します。
+
+次のケースは「操作前を取得」で基準を取り直します。テーブルや条件を変える場合は「設定・取得結果をリセット」を押します。
+
+## 再起動したとき
+
+前回の入力設定、操作前データ、比較結果を復元します。同じWindowsユーザーの `%LOCALAPPDATA%\DBChangeLogger\session.bin` に暗号化して保存します。接続設定を変更した場合は入力だけを復元します。大量データの保存・復元には時間と空き容量が必要です。複数回起動しても、同じWindowsセッションでは1画面だけ表示します。
+
+## 困ったとき
+
+| 状況 | 確認すること |
+|---|---|
+| 接続設定がないと表示される | GitHubの公開版は確認用です。実DB利用には作成者の設定済みZIPが必要です。 |
+| テーブル一覧を取得できない | ネットワーク、接続情報、TLS、SELECT権限を作成者に確認します。例外の接続情報は画面に表示しません。 |
+| テーブルが一覧に出ない | `public` / `dbo` の両方に同名テーブルがあり、接続アカウントから見えるか確認します。ビューは対象外です。 |
+| 主キーのエラーが出る | 両DBに主キーがあり、同じ列で構成されているか確認します。主キーは除外できません。 |
+| 件数が多く時間がかかる | 検索条件と取得列を絞ります。COUNT自体が遅い場合もあります。全件データはメモリに保持するため、1億件を同時取得できる保証はありません。 |
+| Excelに貼り付けられない | デスクトップ版Excelで通常のCtrl+Vを使い、アプリから再度コピーします。Excelの行・列・セル文字数上限を超えた場合は対象を絞ります。 |
+
+詳しい比較ルールと開発用MSTestの実行方法は[README](README.md)、過去のWindows・Excel確認記録は[WINDOWS-VERIFICATION](WINDOWS-VERIFICATION.md)を参照してください。
