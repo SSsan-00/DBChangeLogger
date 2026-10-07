@@ -206,7 +206,7 @@ class MainForm:Form {
  availableColumns=TableCatalog.CommonColumns(pgColumns,sqlColumns);
  foreach(var input in new[]{selectedColumns,ignore})input.Text=string.Join(", ",input.Text.Split(',',StringSplitOptions.TrimEntries|StringSplitOptions.RemoveEmptyEntries).Where(n=>availableColumns.Any(c=>string.Equals(c.Name,n,StringComparison.OrdinalIgnoreCase))));
  foreach(var row in filterRows.Controls.OfType<FilterRow>())row.BindColumns(SearchColumns());
- 
+
  status.Text=$"列定義を取得しました。共通列 {availableColumns.Length}列。列を選択できます。";
  });
  UpdateTableSelection();
