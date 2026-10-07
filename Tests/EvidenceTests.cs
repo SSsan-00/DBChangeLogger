@@ -130,6 +130,30 @@ public sealed class EvidenceTests
     }
 
     [TestMethod]
+    public void CombineSpreadsheetXml_KeepsTablesWithSeparateColumnsKeysAndJudgments()
+    {
+        var d=DemoEvidence.CreateSingleUpdate();
+        var first=Engine.Render(d.PgBefore.Columns,Engine.Compare(d.PgBefore,d.PgAfter,d.SqlBefore,d.SqlAfter,d.Spec),d.Spec,d.PgBefore,d.PgAfter,d.SqlBefore,d.SqlAfter,true).SpreadsheetXml;
+        var spec=new TableSpec("public","orders",["id"],[]);
+        var before=new Snapshot(["id","status"],new(){["[\"1\"]"]=["1","受付"]},DateTimeOffset.UtcNow);
+        var after=before with{Rows=new(){["[\"1\"]"]=["1","完了"]}};
+        var second=Engine.Render(before.Columns,Engine.Compare(before,after,before,after,spec),spec,before,after,before,after,true).SpreadsheetXml;
+        XNamespace ss="urn:schemas-microsoft-com:office:spreadsheet";
+        var xml=XDocument.Parse(Engine.CombineSpreadsheetXml([first,second]));
+        Assert.AreEqual(1,xml.Descendants(ss+"Worksheet").Count());Assert.AreEqual(1,xml.Descendants(ss+"Styles").Count());
+        var rows=xml.Descendants(ss+"Row").Select(r=>r.Descendants(ss+"Data").Select(c=>c.Value).ToArray()).ToArray();
+        Assert.AreEqual(11,rows.Length);Assert.AreEqual(0,rows[5].Length);
+        Assert.AreEqual("対象: "+d.Spec.Name,rows[0][0]);Assert.AreEqual("対象: orders",rows[6][0]);
+        CollectionAssert.AreEqual(new[]{"DB","操作","id","status"},rows[7]);
+        Assert.AreEqual(2,rows.Count(r=>r.FirstOrDefault()=="判定"));
+        Assert.AreEqual("商品A",rows[2][3]);Assert.AreEqual("完了",rows[8][3]);Assert.AreEqual("受付",before.Rows["[\"1\"]"][1]);
+        Assert.IsTrue(xml.Descendants(ss+"Data").All(c=>(string?)c.Attribute(ss+"Type")=="String"));
+        using var canceled=new CancellationTokenSource();canceled.Cancel();
+        Assert.ThrowsExactly<OperationCanceledException>(()=>Engine.CombineSpreadsheetXml([first,second],canceled.Token));
+        Assert.ThrowsExactly<InvalidOperationException>(()=>Engine.CombineSpreadsheetXml([]));
+    }
+
+    [TestMethod]
     public void ClipboardHtml_OffsetsReferToUtf8Bytes()
     {
         const string html = "<html><body><table><tr><td>日本語</td></tr></table></body></html>";

@@ -3,6 +3,14 @@ namespace DbEvidence;
 // DBに接続せず、本番と同じ比較・描画処理を検証するデータ。
 public static class DemoEvidence
 {
+    public static (TableSpec Spec, Snapshot PgBefore, Snapshot PgAfter, Snapshot SqlBefore, Snapshot SqlAfter)[] CreateMultiple()
+    {
+        var product=CreateSingleUpdate();
+        var before=new Snapshot(["id","status"],new(){["[\"1\"]"]=["1","受付"]},DateTimeOffset.UtcNow);
+        var after=before with{Rows=new(){["[\"1\"]"]=["1","完了"]}};
+        return [product,(new("public","orders",["id"],[]),before,after,before,before)];
+    }
+
     public static (TableSpec Spec, Snapshot PgBefore, Snapshot PgAfter, Snapshot SqlBefore, Snapshot SqlAfter) CreateSingleUpdate()
     {
         var before = new Snapshot(["id", "name", "amount"], new() { ["[\"1\"]"] = ["1", "商品A", "10"] }, DateTimeOffset.UtcNow);

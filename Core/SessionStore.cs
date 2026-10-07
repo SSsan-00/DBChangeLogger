@@ -4,10 +4,13 @@ using System.Text.Json;
 using System.Runtime.Versioning;
 namespace DbEvidence;
 public record SavedFilter(TableFilter Filter,string Join);
-public record ResultSummary(string 主キー,string PG操作,string SQL操作,string 変更列,string 判定);
+public record ResultSummary(string 主キー,string PG操作,string SQL操作,string 変更列,string 判定,string テーブル="");
+public record TrackedTable(TableSpec PgSpec,TableSpec SqlSpec,Snapshot? PgBefore=null,Snapshot? SqlBefore=null,string Counts="") {
+ public override string ToString()=>PgSpec.Name+(Counts.Length==0?"":"  "+Counts);
+}
 // DTO変更時はVersionとLoadの受け入れ条件も見直す。無条件に旧データを新仕様として解釈しない。
 public record SavedSession(int Version,string ConnectionId,string Table,string Columns,string Ignored,SavedFilter[] Filters,
- TableSpec? PgSpec,TableSpec? SqlSpec,Snapshot? PgBefore,Snapshot? SqlBefore,string? SpreadsheetXml,ResultSummary[] Results,string Counts,string Status,string TableSearch="");
+ TableSpec? PgSpec,TableSpec? SqlSpec,Snapshot? PgBefore,Snapshot? SqlBefore,string? SpreadsheetXml,ResultSummary[] Results,string Counts,string Status,string TableSearch="",TrackedTable[]? Targets=null);
 [SupportedOSPlatform("windows")]
 public static class SessionStore {
  public static string DefaultPath=>Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"DBChangeLogger","session.bin");
@@ -47,7 +50,7 @@ public static class SessionStore {
    file.Position=start;using var limited=new LimitedReadStream(file,end-start);using var aes=Aes.Create();aes.Key=key[..32];aes.IV=iv;
    using var crypto=new CryptoStream(limited,aes.CreateDecryptor(),CryptoStreamMode.Read);using var compressed=new BrotliStream(crypto,CompressionMode.Decompress);
    var session=JsonSerializer.Deserialize<SavedSession>(compressed)??throw new InvalidDataException();compressed.CopyTo(Stream.Null);
-   if(session.Version!=1)throw new InvalidDataException();return session;
+   if(session.Version is not (1 or 2))throw new InvalidDataException();return session;
   }finally{CryptographicOperations.ZeroMemory(key);}
  }
  // 末尾のHMACを暗号文としてCryptoStreamへ渡すとパディング検証が失敗するため、読み取り範囲を制限する。

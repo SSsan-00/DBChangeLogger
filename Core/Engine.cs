@@ -197,6 +197,29 @@ public static class Engine {
  return(spreadsheetOnly?"":html.ToString(),text.ToString(),"<?xml version=\"1.0\" encoding=\"utf-8\"?>"+xml);
 
  }
+ // 同じRenderで生成した表を1枚へ連結する。大量行をXMLツリーに展開せず、行単位でコピーする。
+ public static string CombineSpreadsheetXml(IEnumerable<string> tables,CancellationToken cancellationToken=default) {
+ const string ns="urn:schemas-microsoft-com:office:spreadsheet";var output=new StringBuilder();
+ using var writer=XmlWriter.Create(output,new XmlWriterSettings{OmitXmlDeclaration=true});
+ writer.WriteStartElement("Workbook",ns);writer.WriteAttributeString("xmlns","ss",null,ns);
+ var first=true;long rows=0;
+ foreach(var xml in tables) {
+ cancellationToken.ThrowIfCancellationRequested();
+ if(!first){if(++rows>1048576)throw new InvalidOperationException(ExcelLimitError);writer.WriteStartElement("Row",ns);writer.WriteEndElement();}
+ using var reader=XmlReader.Create(new StringReader(xml),new XmlReaderSettings{IgnoreWhitespace=true});
+ while(!reader.EOF) {
+ cancellationToken.ThrowIfCancellationRequested();
+ if(reader.NodeType==XmlNodeType.Element&&reader.LocalName=="Styles") {
+ if(first){writer.WriteNode(reader,true);writer.WriteStartElement("Worksheet",ns);writer.WriteAttributeString("ss","Name",ns,"Evidence");writer.WriteStartElement("Table",ns);first=false;}else reader.Skip();
+ }else if(reader.NodeType==XmlNodeType.Element&&reader.LocalName=="Row") {
+ if(++rows>1048576)throw new InvalidOperationException(ExcelLimitError);writer.WriteNode(reader,true);
+ }else reader.Read();
+ }
+ }
+ if(first)throw new InvalidOperationException("出力対象のテーブルがありません。");
+ writer.WriteEndElement();writer.WriteEndElement();writer.WriteEndElement();writer.Flush();
+ return "<?xml version=\"1.0\" encoding=\"utf-8\"?>"+output;
+ }
  public static string ClipboardHtml(string fragment) {
  const string start="<!--StartFragment-->";const string end="<!--EndFragment-->";
  if(fragment.StartsWith("<html>",StringComparison.Ordinal)) fragment=fragment[(fragment.IndexOf("<body>")+6)..fragment.LastIndexOf("</body>")];
