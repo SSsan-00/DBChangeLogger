@@ -174,7 +174,7 @@ public static class Engine {
  }
 
  var condition=spec.Conditions.Length==0?"":" / 条件: "+string.Concat(spec.Conditions.Select((f,i)=>(i==0?"":" "+spec.JoinBefore(i)+" ")+$"({f.Column} {f.Operator} {f.Value}"+(f.Operator=="範囲"?$"〜{f.Upper}":"")+")"));
- Row(new[]{($"対象: {spec.Name}"+condition,"#ffffff"),($"PostgreSQL: 追加 {evidence.Count(e=>e.Pg.Operation=="追加")}件 / 更新 {evidence.Count(e=>e.Pg.Operation=="更新")}件 / 削除 {evidence.Count(e=>e.Pg.Operation=="削除")}件","#ffffff"),($"SQL Server: 追加 {evidence.Count(e=>e.Sql.Operation=="追加")}件 / 更新 {evidence.Count(e=>e.Sql.Operation=="更新")}件 / 削除 {evidence.Count(e=>e.Sql.Operation=="削除")}件","#ffffff")});
+ Row(new[]{($"対象: {spec.Name}"+condition,"#ffffff")});
  if(spec.Columns is {Length:>0})Row(new[]{("取得列: "+string.Join(", ",columns),"#ffffff")});
  if(spec.Ignored.Length>0)Row(new[]{("除外列: "+string.Join(", ",spec.Ignored),"#ffffff")});
  Row(new[]{"DB","操作"}.Concat(columns).Select(c=>(c,"#d9e2f3")));

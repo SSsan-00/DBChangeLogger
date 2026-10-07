@@ -89,15 +89,15 @@ public sealed class EvidenceTests
     }
 
     [TestMethod]
-    public void Render_CountsEachDatabaseAndOmitsUnspecifiedIgnoredColumns()
+    public void Render_OmitsSummaryCellsAndUnspecifiedColumns()
     {
         var d=DemoEvidence.CreateSingleUpdate();
         var after=d.PgAfter with { Rows=new(d.PgAfter.Rows) { ["[\"2\"]"]=["2","商品B","25"] } };
         var before=d.PgBefore with { Rows=new(d.PgBefore.Rows) { ["[\"2\"]"]=["2","商品B","20"] } };
         var changes=Engine.Compare(before,after,before,d.SqlAfter with { Rows=new(d.SqlAfter.Rows) { ["[\"2\"]"]=["2","商品B","20"] } },d.Spec);
         var output=Engine.Render(before.Columns,changes,d.Spec,before,after,before,d.SqlAfter);
-        StringAssert.Contains(output.Text,"PostgreSQL: 追加 0件 / 更新 2件 / 削除 0件");
-        StringAssert.Contains(output.Text,"SQL Server: 追加 0件 / 更新 1件 / 削除 0件");
+        var firstRow=XDocument.Parse(output.SpreadsheetXml).Descendants(XName.Get("Row","urn:schemas-microsoft-com:office:spreadsheet")).First();
+        Assert.AreEqual(1,firstRow.Elements().Count(),"先頭行には対象だけを出力する。");
         Assert.IsFalse(output.Text.Contains("除外列:"));
         Assert.IsFalse(output.Text.Contains("取得列:"));
         Assert.IsFalse(output.Text.Contains("変更行:")||output.Text.Contains("不一致:"));
