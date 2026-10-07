@@ -61,7 +61,7 @@ public sealed class EvidenceTests
         Assert.IsFalse(output.Text.Contains("対象: "+d.Spec.Schema+"."));
         Assert.IsFalse(output.Text.Contains("黄色=変更 / 赤=DB間不一致 / NULL・空文字は明示"));
         Assert.IsFalse(output.Text.Contains("PG 前")||output.Text.Contains("SQL Server 前"));
-        Assert.AreEqual(20, output.Text.Split('\n', StringSplitOptions.RemoveEmptyEntries).Length);
+        Assert.AreEqual(15, output.Text.Split('\n', StringSplitOptions.RemoveEmptyEntries).Length);
     }
 
     [TestMethod]
@@ -73,18 +73,18 @@ public sealed class EvidenceTests
         var allRows=xml.Descendants(ss+"Row").Skip(3).Select(r=>r.Descendants(ss+"Data").Select(c=>c.Value).ToArray()).ToArray();
         var rows=allRows.Where(r=>r[0]!="判定").ToArray();
         var headers=xml.Descendants(ss+"Row").ElementAt(2).Descendants(ss+"Data").Select(c=>c.Value).ToArray();
-        CollectionAssert.AreEqual(new[]{"DB","操作","変更列"}.Concat(d.PgBefore.Columns).ToArray(),headers);
+        CollectionAssert.AreEqual(new[]{"DB","操作"}.Concat(d.PgBefore.Columns).ToArray(),headers);
         Assert.IsFalse(headers.Contains("主キー")||headers.Contains("時点"));
         Assert.AreEqual(11,rows.Length);Assert.IsTrue(rows.All(r=>r[1]!="変更なし"));
-        Assert.AreEqual(1,rows.Count(r=>r[3]=="5"));
-        Assert.IsTrue(rows.Where(r=>r[1]=="削除").All(r=>r[3]=="2"&&r.Skip(4).All(v=>v=="〈行なし〉")));
+        Assert.AreEqual(1,rows.Count(r=>r[2]=="5"));
+        Assert.IsTrue(rows.Where(r=>r[1]=="削除").All(r=>r[2]=="2"&&r.Skip(3).All(v=>v=="〈行なし〉")));
         var judgments=allRows.Where(r=>r[0]=="判定").ToArray();
-        Assert.AreEqual(6,judgments.Length);
-        CollectionAssert.AreEqual(new[]{"◯","◯","◯"},judgments[0].Skip(3).Take(3).ToArray());
-        Assert.AreEqual("×",judgments[2][5]); // id=4のamountが41 / 42。
-        Assert.AreEqual("×",judgments[3][5]); // id=5はPGのみ更新。
-        Assert.IsTrue(judgments.All(r=>r[8]=="除外")); // stamp。
-        foreach(var cell in xml.Descendants(ss+"Row").Where(r=>r.Element(ss+"Cell")?.Element(ss+"Data")?.Value=="判定").SelectMany(r=>r.Elements(ss+"Cell").Skip(3)))
+        Assert.AreEqual(1,judgments.Length);
+        Assert.AreEqual("判定",allRows[^1][0]);
+        CollectionAssert.AreEqual(new[]{"◯","◯","×"},judgments[0].Skip(2).Take(3).ToArray());
+        Assert.AreEqual("×",judgments[0][4]); // 全レコードのamountの不一致を集約。
+        Assert.IsTrue(judgments.All(r=>r[7]=="除外")); // stamp。
+        foreach(var cell in xml.Descendants(ss+"Row").Where(r=>r.Element(ss+"Cell")?.Element(ss+"Data")?.Value=="判定").SelectMany(r=>r.Elements(ss+"Cell").Skip(2)))
             Assert.AreEqual(cell.Element(ss+"Data")!.Value switch {"◯"=>"Ce2f0d9","×"=>"Cffc7ce",_=>"Cffffff"},(string?)cell.Attribute(ss+"StyleID"));
     }
 
@@ -100,10 +100,11 @@ public sealed class EvidenceTests
         StringAssert.Contains(output.Text,"SQL Server: 追加 0件 / 更新 1件 / 削除 0件");
         Assert.IsFalse(output.Text.Contains("除外列:"));
         Assert.IsFalse(output.Text.Contains("取得列:"));
-        Assert.AreEqual(7,XDocument.Parse(output.SpreadsheetXml).Descendants(XName.Get("Row","urn:schemas-microsoft-com:office:spreadsheet")).Count());
+        Assert.IsFalse(output.Text.Contains("変更行:")||output.Text.Contains("不一致:"));
+        Assert.AreEqual(6,XDocument.Parse(output.SpreadsheetXml).Descendants(XName.Get("Row","urn:schemas-microsoft-com:office:spreadsheet")).Count());
         var selected=Engine.Render(before.Columns,changes,d.Spec with {Columns=["name","amount"]},before,after,before,d.SqlAfter);
         StringAssert.Contains(selected.Text,"取得列: id, name, amount");
-        Assert.AreEqual(8,XDocument.Parse(selected.SpreadsheetXml).Descendants(XName.Get("Row","urn:schemas-microsoft-com:office:spreadsheet")).Count());
+        Assert.AreEqual(7,XDocument.Parse(selected.SpreadsheetXml).Descendants(XName.Get("Row","urn:schemas-microsoft-com:office:spreadsheet")).Count());
     }
 
     [TestMethod]
@@ -128,7 +129,7 @@ public sealed class EvidenceTests
         Assert.IsTrue(document.Descendants(ss + "Data").All(d => (string?)d.Attribute(ss + "Type") == "String"));
         Assert.IsFalse(document.Descendants().Attributes(ss + "Formula").Any());
         Assert.IsTrue(document.Descendants(ss + "Data").Any(d => d.Value == "  前後空白  "));
-        Assert.AreEqual(20, document.Descendants(ss + "Row").Count());
+        Assert.AreEqual(15, document.Descendants(ss + "Row").Count());
     }
 
     [TestMethod]

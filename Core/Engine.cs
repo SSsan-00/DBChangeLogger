@@ -7,7 +7,7 @@ using System.Xml;
 using Npgsql;
 using Microsoft.Data.SqlClient;
 namespace DbEvidence;
-public record TableSpec(string Schema, string Name, string[] Keys, string[] Ignored,TableFilter? Filter=null,string[]? Columns=null,TableFilter[]? Filters=null,string FilterJoin="AND",string[]? FilterJoins=null) {
+public record TableSpec(string Schema, string Name, string[] Keys, string[] Ignored,TableFilter? Filter=null,string[]? Columns=null,TableFilter[]? Filters=null,string FilterJoin="AND",string[]? FilterJoins=null,TableColumn[]? Definition=null) {
  public TableFilter[] Conditions=>Filters??(Filter is {} f?[f]:[]);
  public string JoinBefore(int index)=>FilterJoins is {} joins?joins[index-1]:FilterJoin;
 }
@@ -65,7 +65,9 @@ public static class Engine {
  var cmd=db.CreateCommand();
  try {
  if(spec.FilterJoin is not ("AND" or "OR"))throw new InvalidOperationException("条件の結合方法が正しくありません。");
- var selected=spec.Columns is {Length:>0} columns?columns.Concat(spec.Keys).Distinct(StringComparer.OrdinalIgnoreCase).ToArray():[];
+ string Resolve(string name)=>spec.Definition==null?name:spec.Definition.SingleOrDefault(c=>string.Equals(c.Name,name,StringComparison.OrdinalIgnoreCase))?.Name??throw new InvalidOperationException("DBに存在しない列は指定できません。");
+ foreach(var name in spec.Keys.Concat(spec.Ignored))Resolve(name);
+ var selected=spec.Columns is {Length:>0} columns?columns.Concat(spec.Keys).Select(Resolve).Distinct(StringComparer.OrdinalIgnoreCase).ToArray():[];
  if(selected.Any(string.IsNullOrWhiteSpace))throw new InvalidOperationException("取得列が正しくありません。");
  var projection=count?(pg?"COUNT(*)":"COUNT_BIG(*)"):selected.Length==0?"*":string.Join(", ",selected.Select(c=>Q(c,pg)));
  cmd.CommandTimeout=120;cmd.CommandText=$"SELECT {projection} FROM {Q(spec.Schema,pg)}.{Q(spec.Name,pg)}";
@@ -81,9 +83,10 @@ public static class Engine {
  "日時"=>DateTime.SpecifyKind(DateTime.ParseExact(value,new[]{"yyyy-MM-dd","yyyy-MM-dd HH:mm:ss","yyyy-MM-ddTHH:mm:ss","yyyy-MM-dd HH:mm:ss.FFFFFFF","yyyy-MM-ddTHH:mm:ss.FFFFFFF"},CultureInfo.InvariantCulture,DateTimeStyles.None),DateTimeKind.Unspecified),
  "GUID"=>Guid.Parse(value),
  _=>throw new InvalidOperationException("検索値の型が正しくありません。")};
- void Add(string name,string value){var parameter=cmd.CreateParameter();parameter.ParameterName=name;parameter.Value=Parse(value);cmd.Parameters.Add(parameter);}
+ var columnName=Resolve(filter.Column);var definition=spec.Definition?.Single(c=>c.Name==columnName);
+ void Add(string name,string value){var parameter=cmd.CreateParameter();parameter.ParameterName=name;parameter.Value=definition==null?Parse(value):definition.Parse(value);if(definition?.DatabaseType=="date")parameter.DbType=System.Data.DbType.Date;if(!pg&&definition?.DatabaseType=="datetime2")parameter.DbType=System.Data.DbType.DateTime2;cmd.Parameters.Add(parameter);}
  var suffix=i==0?"":i.ToString(CultureInfo.InvariantCulture);var valueName="filterValue"+suffix;var upperName="filterUpper"+suffix;
- Add(valueName,filter.Value);var column=Q(filter.Column,pg);
+ Add(valueName,filter.Value);var column=Q(columnName,pg);
  if(filter.Operator=="範囲"){Add(upperName,filter.Upper);clauses.Add($"({column} BETWEEN @{valueName} AND @{upperName})");}
  else clauses.Add($"({column} {filter.Operator} @{valueName})");
  }
@@ -147,7 +150,7 @@ public static class Engine {
  }
  static string Visible(string? value) => value==null?"〈NULL〉":value.Length==0?"〈空文字〉":value.Replace("\r","\\r").Replace("\n","\\n").Replace("\t","\\t");
  public static (string Html,string Text,string SpreadsheetXml) Render(string[] columns,List<Evidence> evidence,TableSpec spec,Snapshot pb,Snapshot pa,Snapshot sb,Snapshot sa,bool spreadsheetOnly=false,CancellationToken cancellationToken=default) {
- if(evidence.Sum(e=>(long)(e.Pg.Operation!="変更なし"?1:0)+(e.Sql.Operation!="変更なし"?1:0)+1)+2+(spec.Ignored.Length>0?1:0)+(spec.Columns is {Length:>0}?1:0)>1048576||columns.Length+3>16384)throw new InvalidOperationException(ExcelLimitError);
+ if(evidence.Sum(e=>(long)(e.Pg.Operation!="変更なし"?1:0)+(e.Sql.Operation!="変更なし"?1:0))+3+(spec.Ignored.Length>0?1:0)+(spec.Columns is {Length:>0}?1:0)>1048576||columns.Length+2>16384)throw new InvalidOperationException(ExcelLimitError);
  // Excelの推測による日付・数値・数式への変換を防ぐため、DataのString型と書式@を両方維持する。
  // ここに追加した上部の行は、直前のExcel行数上限チェックにも反映する。
  XNamespace ss="urn:schemas-microsoft-com:office:spreadsheet";
@@ -171,18 +174,19 @@ public static class Engine {
  }
 
  var condition=spec.Conditions.Length==0?"":" / 条件: "+string.Concat(spec.Conditions.Select((f,i)=>(i==0?"":" "+spec.JoinBefore(i)+" ")+$"({f.Column} {f.Operator} {f.Value}"+(f.Operator=="範囲"?$"〜{f.Upper}":"")+")"));
- Row(new[]{($"対象: {spec.Name}"+condition,"#ffffff"),("変更行: "+evidence.Count,"#ffffff"),("不一致: "+evidence.Count(x=>!x.Match),"#ffffff"),($"PostgreSQL: 追加 {evidence.Count(e=>e.Pg.Operation=="追加")}件 / 更新 {evidence.Count(e=>e.Pg.Operation=="更新")}件 / 削除 {evidence.Count(e=>e.Pg.Operation=="削除")}件","#ffffff"),($"SQL Server: 追加 {evidence.Count(e=>e.Sql.Operation=="追加")}件 / 更新 {evidence.Count(e=>e.Sql.Operation=="更新")}件 / 削除 {evidence.Count(e=>e.Sql.Operation=="削除")}件","#ffffff")});
+ Row(new[]{($"対象: {spec.Name}"+condition,"#ffffff"),($"PostgreSQL: 追加 {evidence.Count(e=>e.Pg.Operation=="追加")}件 / 更新 {evidence.Count(e=>e.Pg.Operation=="更新")}件 / 削除 {evidence.Count(e=>e.Pg.Operation=="削除")}件","#ffffff"),($"SQL Server: 追加 {evidence.Count(e=>e.Sql.Operation=="追加")}件 / 更新 {evidence.Count(e=>e.Sql.Operation=="更新")}件 / 削除 {evidence.Count(e=>e.Sql.Operation=="削除")}件","#ffffff")});
  if(spec.Columns is {Length:>0})Row(new[]{("取得列: "+string.Join(", ",columns),"#ffffff")});
  if(spec.Ignored.Length>0)Row(new[]{("除外列: "+string.Join(", ",spec.Ignored),"#ffffff")});
- Row(new[]{"DB","操作","変更列"}.Concat(columns).Select(c=>(c,"#d9e2f3")));
+ Row(new[]{"DB","操作"}.Concat(columns).Select(c=>(c,"#d9e2f3")));
  foreach(var e in evidence) {
  foreach(var (db,c) in new[]{("PostgreSQL",e.Pg),("SQL Server",e.Sql)}) {
  // 削除行は識別できるよう主キーだけ操作前の値を残す。他列は操作後に行がないことを表す。
  if(c.Operation=="変更なし")continue;var values=c.After;
- Row(new[]{(db,"#ffffff"),(c.Operation,c.Operation=="追加"?"#e2f0d9":c.Operation=="削除"?"#dddddd":"#ffffff"),(string.Join(", ",c.Changed.Select(i=>columns[i])),"#ffffff")}.Concat(columns.Select((col,i)=>(values==null?(spec.Keys.Contains(col,StringComparer.OrdinalIgnoreCase)?Visible(c.Before?[i]):"〈行なし〉"):Visible(values[i]),e.Different.Contains(i)?"#ffc7ce":c.Changed.Contains(i)?"#fff2cc":"#ffffff")))); }
- // 判定対象は変更列。変更されていない列も仕様上は◯とし、除外列だけは一致扱いにしない。
- Row(new[]{("判定","#d9e2f3"),("","#ffffff"),("","#ffffff")}.Concat(columns.Select((col,i)=>spec.Ignored.Contains(col,StringComparer.OrdinalIgnoreCase)?("除外","#ffffff"):e.Different.Contains(i)?("×","#ffc7ce"):("◯","#e2f0d9"))));
+ Row(new[]{(db,"#ffffff"),(c.Operation,c.Operation=="追加"?"#e2f0d9":c.Operation=="削除"?"#dddddd":"#ffffff")}.Concat(columns.Select((col,i)=>(values==null?(spec.Keys.Contains(col,StringComparer.OrdinalIgnoreCase)?Visible(c.Before?[i]):"〈行なし〉"):Visible(values[i]),e.Different.Contains(i)?"#ffc7ce":c.Changed.Contains(i)?"#fff2cc":"#ffffff")))); }
  }
+ // 全レコードの不一致列を集約し、末尾に1行だけ表示する。既存の非変更列の差は対象外。
+ var different=evidence.SelectMany(e=>e.Different).ToHashSet();
+ Row(new[]{("判定","#d9e2f3"),("","#ffffff")}.Concat(columns.Select((col,i)=>spec.Ignored.Contains(col,StringComparer.OrdinalIgnoreCase)?("除外","#ffffff"):different.Contains(i)?("×","#ffc7ce"):("◯","#e2f0d9"))));
  if(!spreadsheetOnly)html.Append("</table></body></html>");
  writer.WriteEndElement();writer.WriteEndElement();writer.WriteEndElement();writer.Flush();
  return(spreadsheetOnly?"":html.ToString(),text.ToString(),"<?xml version=\"1.0\" encoding=\"utf-8\"?>"+xml);

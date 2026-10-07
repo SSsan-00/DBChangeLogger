@@ -7,7 +7,7 @@ public record SavedFilter(TableFilter Filter,string Join);
 public record ResultSummary(string 主キー,string PG操作,string SQL操作,string 変更列,string 判定);
 // DTO変更時はVersionとLoadの受け入れ条件も見直す。無条件に旧データを新仕様として解釈しない。
 public record SavedSession(int Version,string ConnectionId,string Table,string Columns,string Ignored,SavedFilter[] Filters,
- TableSpec? PgSpec,TableSpec? SqlSpec,Snapshot? PgBefore,Snapshot? SqlBefore,string? SpreadsheetXml,ResultSummary[] Results,string Counts,string Status);
+ TableSpec? PgSpec,TableSpec? SqlSpec,Snapshot? PgBefore,Snapshot? SqlBefore,string? SpreadsheetXml,ResultSummary[] Results,string Counts,string Status,string TableSearch="");
 [SupportedOSPlatform("windows")]
 public static class SessionStore {
  public static string DefaultPath=>Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"DBChangeLogger","session.bin");

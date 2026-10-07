@@ -1,8 +1,23 @@
 using System.Data.Common;
 using Npgsql;
 using Microsoft.Data.SqlClient;
+using System.Globalization;
 namespace DbEvidence;
 
+public record TableColumn(string Name,string ValueType,string DatabaseType) {
+ public bool Numeric=>ValueType is "Byte" or "Int16" or "Int32" or "Int64" or "UInt32" or "Decimal" or "Double" or "Single";
+ public bool Searchable=>Numeric||ValueType is "String" or "Boolean" or "DateTime" or "DateTimeOffset" or "Guid" or "TimeSpan";
+ // 表示上の文字列／数値にかかわらずDBの型へ変換する。文字列列の先頭ゼロは数値化してはいけない。
+ public object Parse(string value)=>ValueType switch {
+  "String"=>value,"Byte"=>byte.Parse(value,CultureInfo.InvariantCulture),"Int16"=>short.Parse(value,CultureInfo.InvariantCulture),
+  "Int32"=>int.Parse(value,CultureInfo.InvariantCulture),"Int64"=>long.Parse(value,CultureInfo.InvariantCulture),"UInt32"=>uint.Parse(value,CultureInfo.InvariantCulture),
+  "Decimal"=>decimal.Parse(value,CultureInfo.InvariantCulture),"Double"=>double.Parse(value,CultureInfo.InvariantCulture),"Single"=>float.Parse(value,CultureInfo.InvariantCulture),
+  "Boolean"=>value=="1"?true:value=="0"?false:bool.Parse(value),"Guid"=>Guid.Parse(value),"TimeSpan"=>TimeSpan.Parse(value,CultureInfo.InvariantCulture),
+  "DateTimeOffset"=>DateTimeOffset.Parse(value,CultureInfo.InvariantCulture,DateTimeStyles.AssumeUniversal).ToUniversalTime(),
+  "DateTime" when DatabaseType is "timestamp with time zone" or "timestamptz"=>DateTimeOffset.Parse(value,CultureInfo.InvariantCulture,DateTimeStyles.AssumeUniversal).UtcDateTime,
+  "DateTime"=>DateTime.SpecifyKind(DateTime.Parse(value,CultureInfo.InvariantCulture,DateTimeStyles.None),DateTimeKind.Unspecified),
+  _=>throw new InvalidOperationException("この列の型は検索条件に対応していません。")};
+}
 public record DatabaseTable(string Name, string[] Keys);
 public record CommonTable(DatabaseTable Postgres, DatabaseTable SqlServer) {
  public override string ToString()=>Postgres.Name;
@@ -18,6 +33,18 @@ public record CommonTable(DatabaseTable Postgres, DatabaseTable SqlServer) {
  }
 }
 public static class TableCatalog {
+ public static TableColumn[] CommonColumns(TableColumn[] pg,TableColumn[] sql) {
+  var names=sql.GroupBy(c=>c.Name,StringComparer.OrdinalIgnoreCase).Where(g=>g.Count()==1).Select(g=>g.Key).ToHashSet(StringComparer.OrdinalIgnoreCase);
+  return pg.GroupBy(c=>c.Name,StringComparer.OrdinalIgnoreCase).Where(g=>g.Count()==1&&names.Contains(g.Key)).Select(g=>g.Single()).ToArray();
+ }
+ public static async Task<TableColumn[]> ReadColumns(bool pg,string connection,string table,CancellationToken token=default) {
+  await using DbConnection db=pg?new NpgsqlConnection(connection):new SqlConnection(connection);await db.OpenAsync(token);
+  await using var cmd=Engine.CreateSelectCommand(db,pg,new(pg?"public":"dbo",table,[],[]));
+  // 選んだテーブルの定義だけ取得する。行データや全1000テーブル分の列定義を先読みしない。
+  cmd.CommandText+=" WHERE 1=0";
+  await using var reader=await cmd.ExecuteReaderAsync(System.Data.CommandBehavior.SchemaOnly,token);
+  return reader.GetColumnSchema().Select(c=>new TableColumn(c.ColumnName!,c.DataType?.Name??"",(c.DataTypeName??"").ToLowerInvariant())).ToArray();
+ }
  public static CommonTable[] Common(IEnumerable<DatabaseTable> pg,IEnumerable<DatabaseTable> sql) {
   // 大文字小文字だけが違う複数テーブルは、自動対応付けが曖昧になるため候補から除く。
   var p=pg.GroupBy(t=>t.Name,StringComparer.OrdinalIgnoreCase).Where(g=>g.Count()==1).Select(g=>g.Single());

@@ -28,6 +28,9 @@ var common=TableCatalog.Common(await TableCatalog.Read(true,pg),await TableCatal
 var selected=common.Single(t=>t.Postgres.Name=="evidence_test");
 Assert(selected.KeyError==null&&selected.Postgres.Keys.SequenceEqual(new[]{"id"})&&selected.SqlServer.Keys.SequenceEqual(new[]{"id"}),"実DBから共通テーブルと主キーを取得");
 var (ps,ss)=selected.Specs(new[]{"stamp"},null);
+ps=ps with{Definition=await TableCatalog.ReadColumns(true,pg,selected.Postgres.Name)};
+ss=ss with{Definition=await TableCatalog.ReadColumns(false,sql,selected.SqlServer.Name)};
+Assert(TableCatalog.CommonColumns(ps.Definition!,ss.Definition!).Length==4,"共通列とDB型を取得");
 var pb=await Engine.Capture(true,pg,ps);var sb=await Engine.Capture(false,sql,ss);
 foreach(var p in new[]{true,false}){var t=(p?"public":"dbo")+".evidence_test";await Run(p,$"UPDATE {t} SET amount=12 WHERE id=1; DELETE FROM {t} WHERE id=2; INSERT INTO {t} VALUES(8,{(p?"":"N")}'追加',80,0); UPDATE {t} SET amount={(p?41:42)} WHERE id=4; UPDATE {t} SET name='' WHERE id=6; UPDATE {t} SET stamp={(p?1:2)} WHERE id=7;");}
 await Run(true,"UPDATE public.evidence_test SET amount=51 WHERE id=5;");
