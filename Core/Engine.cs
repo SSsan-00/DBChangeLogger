@@ -150,7 +150,7 @@ public static class Engine {
  }
  static string Visible(string? value) => value==null?"〈NULL〉":value.Length==0?"〈空文字〉":value.Replace("\r","\\r").Replace("\n","\\n").Replace("\t","\\t");
  public static (string Html,string Text,string SpreadsheetXml) Render(string[] columns,List<Evidence> evidence,TableSpec spec,Snapshot pb,Snapshot pa,Snapshot sb,Snapshot sa,bool spreadsheetOnly=false,CancellationToken cancellationToken=default) {
- if(evidence.Sum(e=>(long)(e.Pg.Operation!="変更なし"?1:0)+(e.Sql.Operation!="変更なし"?1:0))+3+(spec.Ignored.Length>0?1:0)+(spec.Columns is {Length:>0}?1:0)>1048576||columns.Length+2>16384)throw new InvalidOperationException(ExcelLimitError);
+ if((long)evidence.Count*2+3+(spec.Ignored.Length>0?1:0)+(spec.Columns is {Length:>0}?1:0)>1048576||columns.Length+2>16384)throw new InvalidOperationException(ExcelLimitError);
  // Excelの推測による日付・数値・数式への変換を防ぐため、DataのString型と書式@を両方維持する。
  // ここに追加した上部の行は、直前のExcel行数上限チェックにも反映する。
  XNamespace ss="urn:schemas-microsoft-com:office:spreadsheet";
@@ -180,9 +180,10 @@ public static class Engine {
  Row(new[]{"DB","操作"}.Concat(columns).Select(c=>(c,"#d9e2f3")));
  foreach(var e in evidence) {
  foreach(var (db,c) in new[]{("PostgreSQL",e.Pg),("SQL Server",e.Sql)}) {
- // 削除行は識別できるよう主キーだけ操作前の値を残す。他列は操作後に行がないことを表す。
- if(c.Operation=="変更なし")continue;var values=c.After;
- Row(new[]{(db,"#ffffff"),(c.Operation,c.Operation=="追加"?"#e2f0d9":c.Operation=="削除"?"#dddddd":"#ffffff")}.Concat(columns.Select((col,i)=>(values==null?(spec.Keys.Contains(col,StringComparer.OrdinalIgnoreCase)?Visible(c.Before?[i]):"〈行なし〉"):Visible(values[i]),e.Different.Contains(i)?"#ffc7ce":c.Changed.Contains(i)?"#fff2cc":"#ffffff")))); }
+ // 変更した主キーには両DBの行を並べる。相手側が未変更でも操作後の値を比較できるよう残す。
+ // 削除／未存在の行は主キーだけ残す。相手側にしか存在しないときは、その行から主キーを補う。
+ var values=c.After;var keyValues=c.Before??e.Pg.After??e.Sql.After??e.Pg.Before??e.Sql.Before;
+ Row(new[]{(db,"#ffffff"),(c.Operation,c.Operation=="追加"?"#e2f0d9":c.Operation=="削除"?"#dddddd":"#ffffff")}.Concat(columns.Select((col,i)=>(values==null?(spec.Keys.Contains(col,StringComparer.OrdinalIgnoreCase)?Visible(keyValues?[i]):"〈行なし〉"):Visible(values[i]),e.Different.Contains(i)?"#ffc7ce":c.Changed.Contains(i)?"#fff2cc":"#ffffff")))); }
  }
  // 全レコードの不一致列を集約し、末尾に1行だけ表示する。既存の非変更列の差は対象外。
  var different=evidence.SelectMany(e=>e.Different).ToHashSet();
