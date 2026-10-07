@@ -150,7 +150,9 @@ public static class Engine {
  }
  static string Visible(string? value) => value==null?"〈NULL〉":value.Length==0?"〈空文字〉":value.Replace("\r","\\r").Replace("\n","\\n").Replace("\t","\\t");
  public static (string Html,string Text,string SpreadsheetXml) Render(string[] columns,List<Evidence> evidence,TableSpec spec,Snapshot pb,Snapshot pa,Snapshot sb,Snapshot sa,bool spreadsheetOnly=false,CancellationToken cancellationToken=default) {
- if((long)evidence.Count*2+3+(spec.Ignored.Length>0?1:0)+(spec.Columns is {Length:>0}?1:0)>1048576||columns.Length+2>16384)throw new InvalidOperationException(ExcelLimitError);
+ var pgCount=evidence.Count(e=>e.Pg.Operation!="変更なし");var sqlCount=evidence.Count(e=>e.Sql.Operation!="変更なし");
+ var dataRows=evidence.Count==0?0:(long)Math.Max(1,pgCount)+Math.Max(1,sqlCount);
+ if(dataRows+3+(spec.Ignored.Length>0?1:0)+(spec.Columns is {Length:>0}?1:0)>1048576||columns.Length+2>16384)throw new InvalidOperationException(ExcelLimitError);
  // Excelの推測による日付・数値・数式への変換を防ぐため、DataのString型と書式@を両方維持する。
  // ここに追加した上部の行は、直前のExcel行数上限チェックにも反映する。
  XNamespace ss="urn:schemas-microsoft-com:office:spreadsheet";
@@ -178,11 +180,11 @@ public static class Engine {
  if(spec.Columns is {Length:>0})Row(new[]{("取得列: "+string.Join(", ",columns),"#ffffff")});
  if(spec.Ignored.Length>0)Row(new[]{("除外列: "+string.Join(", ",spec.Ignored),"#ffffff")});
  Row(new[]{"DB","操作"}.Concat(columns).Select(c=>(c,"#d9e2f3")));
- foreach(var (db,pg) in new[]{("PostgreSQL",true),("SQL Server",false)}) {
+ foreach(var (db,pg,count) in new[]{("PostgreSQL",true,pgCount),("SQL Server",false,sqlCount)}) {
  foreach(var e in evidence) {
  var c=pg?e.Pg:e.Sql;
- // DBごとに同じ主キー順で出力する。未変更側の行は値を空欄にし、更新されたレコードと区別する。
- if(c.Operation=="変更なし"){Row(new[]{(db,"#ffffff"),(c.Operation,"#ffffff")}.Concat(columns.Select(_=>("","#ffffff"))));continue;}
+ // DBごとに変更行だけ出力する。変更が0件のDBだけ空欄の代表行を1行残し、行数は揃えない。
+ if(c.Operation=="変更なし"){if(count>0)continue;Row(new[]{(db,"#ffffff"),(c.Operation,"#ffffff")}.Concat(columns.Select(_=>("","#ffffff"))));break;}
  // 削除行は主キーだけ削除前の値を残す。
  var values=c.After;var keyValues=c.Before;
  Row(new[]{(db,"#ffffff"),(c.Operation,c.Operation=="追加"?"#e2f0d9":c.Operation=="削除"?"#dddddd":"#ffffff")}.Concat(columns.Select((col,i)=>(values==null?(spec.Keys.Contains(col,StringComparer.OrdinalIgnoreCase)?Visible(keyValues?[i]):"〈行なし〉"):Visible(values[i]),e.Different.Contains(i)?"#ffc7ce":c.Changed.Contains(i)?"#fff2cc":"#ffffff")))); }
