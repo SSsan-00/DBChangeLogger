@@ -16,7 +16,7 @@ public sealed class EvidenceTests
         var d = DemoEvidence.Create();
         var result = Engine.Compare(d.PgBefore, d.PgAfter, d.SqlBefore, d.SqlAfter, d.Spec);
         Assert.AreEqual(6, result.Count);
-        Assert.AreEqual(2, result.Count(e => !e.Match));
+        Assert.AreEqual(6, result.Count(e => !e.Match));
         Assert.AreEqual("削除", result.Single(e => e.Key == "[\"2\"]").Pg.Operation);
         Assert.AreEqual("追加", result.Single(e => e.Key == "[\"8\"]").Pg.Operation);
         Assert.AreEqual("変更なし", result.Single(e => e.Key == "[\"5\"]").Sql.Operation);
@@ -35,17 +35,17 @@ public sealed class EvidenceTests
         };
         var actual = Engine.Compare(d.PgBefore, d.PgAfter, d.SqlBefore, reordered, d.Spec);
         Assert.AreEqual(6, actual.Count);
-        Assert.AreEqual(2, actual.Count(e => !e.Match));
+        Assert.AreEqual(6, actual.Count(e => !e.Match));
     }
 
     [TestMethod]
-    public void Comparison_DetectsDifferentBeforeValuesForChangedColumn()
+    public void Comparison_IgnoresDifferentBeforeValuesForChangedColumn()
     {
-        var d = DemoEvidence.Create();
+        var d = DemoEvidence.CreateSingleUpdate();
         var rows = d.SqlBefore.Rows.ToDictionary(r => r.Key, r => r.Value.ToArray());
         rows["[\"1\"]"][2] = "11";
         var actual = Engine.Compare(d.PgBefore, d.PgAfter, d.SqlBefore with { Rows = rows }, d.SqlAfter, d.Spec);
-        Assert.IsFalse(actual.Single(e => e.Key == "[\"1\"]").Match);
+        Assert.IsTrue(actual.Single(e => e.Key == "[\"1\"]").Match);
     }
 
     [TestMethod]
@@ -54,7 +54,7 @@ public sealed class EvidenceTests
         var d = DemoEvidence.Create();
         var result = Engine.Compare(d.PgBefore, d.PgAfter, d.SqlBefore, d.SqlAfter, d.Spec);
         var output = Engine.Render(d.PgBefore.Columns, result, d.Spec, d.PgBefore, d.PgAfter, d.SqlBefore, d.SqlAfter);
-        foreach (var required in new[] { "#fff2cc", "#ffc7ce", "#e2f0d9", "#dddddd", "00123", "=1+1", "〈空文字〉", "〈行なし〉", "&lt;&amp;&gt;", "\\n", "\\t", "mso-number-format" })
+        foreach (var required in new[] { "#fff2cc", "#ffc7ce", "#ddebf7", "#dddddd", "00123", "=1+1", "〈空文字〉", "〈行なし〉", "&lt;&amp;&gt;", "\\n", "\\t", "mso-number-format" })
             StringAssert.Contains(output.Html, required);
         StringAssert.Contains(output.Text, "'=1+1");
         StringAssert.Contains(output.Text,"対象: "+d.Spec.Name);
@@ -84,9 +84,7 @@ public sealed class EvidenceTests
         var judgments=allRows.Where(r=>r[0]=="判定").ToArray();
         Assert.AreEqual(1,judgments.Length);
         Assert.AreEqual("判定",allRows[^1][0]);
-        CollectionAssert.AreEqual(new[]{"◯","◯","×"},judgments[0].Skip(2).Take(3).ToArray());
-        Assert.AreEqual("×",judgments[0][4]); // 全レコードのamountの不一致を集約。
-        Assert.IsTrue(judgments.All(r=>r[7]=="除外")); // stamp。
+        Assert.IsTrue(judgments[0].Skip(2).All(v=>v=="×"),"変更行数が違う場合は除外列も含め全列×。");
         foreach(var cell in xml.Descendants(ss+"Row").Where(r=>r.Element(ss+"Cell")?.Element(ss+"Data")?.Value=="判定").SelectMany(r=>r.Elements(ss+"Cell").Skip(2)))
             Assert.AreEqual(cell.Element(ss+"Data")!.Value switch {"◯"=>"Ce2f0d9","×"=>"Cffc7ce",_=>"Cffffff"},(string?)cell.Attribute(ss+"StyleID"));
     }
@@ -188,5 +186,41 @@ public sealed class EvidenceTests
         var error = Assert.ThrowsExactly<InvalidOperationException>(() => Engine.Render(empty.Columns, evidence, spec, empty, after, empty, after));
         Assert.AreEqual(Engine.ExcelLimitError, error.Message);
     }
+
+    [TestMethod]
+    public void FinalValuesAndOperationColorsAreIndependent()
+    {
+        var d=DemoEvidence.CreateSingleUpdate();
+        // PGはamount、SQLはnameを更新するが、同じ主キーの操作後は同値。
+        var sb=d.SqlBefore with{Rows=new(){["[\"1\"]"]=["1","旧名","15"]}};
+        var changes=Engine.Compare(d.PgBefore,d.PgAfter,sb,d.SqlAfter,d.Spec);
+        Assert.IsTrue(changes.Single().Match);
+        Assert.AreEqual(0,changes.Single().Different.Length);
+        var rows=Rows(d.PgBefore,d.PgAfter,sb,d.SqlAfter,d.Spec);
+        Assert.AreEqual("Cfff2cc",Style(rows[2],4));Assert.AreEqual("Cffffff",Style(rows[2],3));
+        Assert.AreEqual("Cfff2cc",Style(rows[3],3));Assert.AreEqual("Cffffff",Style(rows[3],4));
+        Assert.IsTrue(rows[^1].Elements(ss+"Cell").Skip(2).All(c=>Style(c)=="Ce2f0d9"));
+        // 更新していないnameにも操作後の差があれば判定対象。
+        var sa=d.SqlAfter with{Rows=new(){["[\"1\"]"]=["1","別名","15"]}};
+        changes=Engine.Compare(d.PgBefore,d.PgAfter,d.SqlBefore,sa,d.Spec);
+        CollectionAssert.AreEqual(new[]{1},changes.Single().Different);
+        rows=Rows(d.PgBefore,d.PgAfter,d.SqlBefore,sa,d.Spec);
+        Assert.AreEqual("Cffffff",Style(rows[2],3));Assert.AreEqual("Cfff2cc",Style(rows[3],3));
+        Assert.AreEqual("Cffc7ce",Style(rows[^1],3));
+        var empty=d.PgBefore with{Rows=new()};
+        rows=Rows(empty,d.PgAfter,empty,d.SqlAfter,d.Spec);
+        Assert.IsTrue(rows[2].Elements(ss+"Cell").Skip(2).All(c=>Style(c)=="Cddebf7"));
+        rows=Rows(d.PgBefore,empty,d.SqlBefore,empty,d.Spec);
+        Assert.IsTrue(rows[2].Elements(ss+"Cell").Skip(2).All(c=>Style(c)=="Cdddddd"));
+        // 同数でも主キーが違う変更行は同一レコードに対応しない。
+        var two=d.PgBefore with{Rows=new(d.PgBefore.Rows){["[\"2\"]"]=["2","商品A","10"]}};
+        var pg=two with{Rows=new(two.Rows){["[\"1\"]"]=["1","商品A","15"]}};
+        var sql=two with{Rows=new(two.Rows){["[\"2\"]"]=["2","商品A","15"]}};
+        Assert.IsTrue(Engine.Compare(two,pg,two,sql,d.Spec).All(e=>!e.Match));
+    }
+    static readonly XNamespace ss="urn:schemas-microsoft-com:office:spreadsheet";
+    static XElement[] Rows(Snapshot pb,Snapshot pa,Snapshot sb,Snapshot sa,TableSpec spec)=>XDocument.Parse(Engine.Render(pb.Columns,Engine.Compare(pb,pa,sb,sa,spec),spec,pb,pa,sb,sa).SpreadsheetXml).Descendants(ss+"Row").ToArray();
+    static string? Style(XElement row,int index)=>(string?)row.Elements(ss+"Cell").ElementAt(index).Attribute(ss+"StyleID");
+    static string? Style(XElement cell)=>(string?)cell.Attribute(ss+"StyleID");
 
 }

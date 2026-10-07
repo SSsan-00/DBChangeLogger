@@ -263,9 +263,10 @@ public sealed class LargeTableTests
  var result=new List<Evidence>();
  foreach(var k in pb.Rows.Keys.Concat(pa.Rows.Keys).Concat(sb.Rows.Keys).Concat(sa.Rows.Keys).Distinct().Order(StringComparer.Ordinal)) {
  var p=Get(k,pb,pa); var s=Get(k,sb,sa); if(p.Operation=="変更なし"&&s.Operation=="変更なし") continue;
- var touched=p.Changed.Union(s.Changed).ToArray();
- var diff=touched.Where(i=>p.Changed.Contains(i)!=s.Changed.Contains(i)||p.Before?[i]!=s.Before?[i]||p.After?[i]!=s.After?[i]).ToArray();
+ var diff=p.Operation!=s.Operation?active:active.Where(i=>p.After?[i]!=s.After?[i]).ToArray();
  result.Add(new(k,p,s,p.Operation==s.Operation&&diff.Length==0,diff)); }
+ if(result.Count(e=>e.Pg.Operation!="変更なし")!=result.Count(e=>e.Sql.Operation!="変更なし"))
+ for(var i=0;i<result.Count;i++)result[i]=result[i] with{Match=false,Different=active};
  return result;
  }
 }

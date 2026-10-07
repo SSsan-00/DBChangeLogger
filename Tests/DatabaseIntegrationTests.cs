@@ -36,7 +36,7 @@ foreach(var p in new[]{true,false}){var t=(p?"public":"dbo")+".evidence_test";aw
 await Run(true,"UPDATE public.evidence_test SET amount=51 WHERE id=5;");
 var pa=await Engine.Capture(true,pg,ps,pb);var sa=await Engine.Capture(false,sql,ss,sb);var result=Engine.Compare(pb,pa,sb,sa,ps);
 Assert(result.Count==6,"変更行のみ（変更なし・除外列のみの変更は出力しない）");
-Assert(result.Count(x=>!x.Match)==2,"更新値不一致・片側だけ更新を検出");
+Assert(result.Count(x=>!x.Match)==6,"変更行数が異なる表は全行不一致");
 Assert(result.Single(x=>x.Key=="[\"8\"]").Pg.Operation=="追加","追加を識別");
 Assert(result.Single(x=>x.Key=="[\"2\"]").Pg.Operation=="削除","削除を識別");
 Assert(result.Single(x=>x.Key=="[\"1\"]").Pg.Changed.SequenceEqual(new[]{2}),"変更列を特定");

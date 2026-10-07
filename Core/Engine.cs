@@ -141,11 +141,14 @@ public static class Engine {
  cancellationToken.ThrowIfCancellationRequested();
  var p=Get(key,pb,pa,identity,pm);var s=Get(key,sb,sa,bm,sm);
  if(p.Operation=="変更なし"&&s.Operation=="変更なし")continue;
- // 既存の差をすべて報告するのではなく、変更された列だけ判定する。その列の変更前値の差も不一致に含める。
- var touched=p.Changed.Union(s.Changed).ToArray();
- var diff=touched.Where(i=>p.Changed.Contains(i)!=s.Changed.Contains(i)||p.Before?[i]!=s.Before?[i]||p.After?[i]!=s.After?[i]).ToArray();
+ // 変更検出とDB間の判定は独立。更新前や更新列が異なっても、操作後の取得値が同じなら一致。
+ // 片側だけの操作は比較する変更行がないため、全対象列を不一致にする。
+ var diff=p.Operation!=s.Operation?active:active.Where(i=>p.After?[i]!=s.After?[i]).ToArray();
  result.Add(new(key,p,s,p.Operation==s.Operation&&diff.Length==0,diff));
  }
+ // 件数が異なる表のサマリーと最終判定を揃える。差分行だけを走査し、全スナップショットは再走査しない。
+ if(result.Count(e=>e.Pg.Operation!="変更なし")!=result.Count(e=>e.Sql.Operation!="変更なし"))
+ for(var i=0;i<result.Count;i++){cancellationToken.ThrowIfCancellationRequested();result[i]=result[i] with{Match=false,Different=active};}
  return result;
  }
  static string Visible(string? value) => value==null?"〈NULL〉":value.Length==0?"〈空文字〉":value.Replace("\r","\\r").Replace("\n","\\n").Replace("\t","\\t");
@@ -158,7 +161,7 @@ public static class Engine {
  XNamespace ss="urn:schemas-microsoft-com:office:spreadsheet";
  var xml=new StringBuilder();
  using var writer=XmlWriter.Create(xml,new XmlWriterSettings{OmitXmlDeclaration=true,Indent=false});
- var styles=new XElement(ss+"Styles",new[]{"ffffff","d9e2f3","e2f0d9","dddddd","ffc7ce","fff2cc"}.Select(color=>new XElement(ss+"Style",new XAttribute(ss+"ID","C"+color),new XElement(ss+"NumberFormat",new XAttribute(ss+"Format","@")),new XElement(ss+"Alignment",new XAttribute(ss+"Vertical","Top")),new XElement(ss+"Interior",new XAttribute(ss+"Color","#"+color),new XAttribute(ss+"Pattern","Solid")),new XElement(ss+"Borders",new[]{"Bottom","Left","Right","Top"}.Select(side=>new XElement(ss+"Border",new XAttribute(ss+"Position",side),new XAttribute(ss+"LineStyle","Continuous"),new XAttribute(ss+"Weight",1)))))));
+ var styles=new XElement(ss+"Styles",new[]{"ffffff","d9e2f3","e2f0d9","dddddd","ffc7ce","fff2cc","ddebf7"}.Select(color=>new XElement(ss+"Style",new XAttribute(ss+"ID","C"+color),new XElement(ss+"NumberFormat",new XAttribute(ss+"Format","@")),new XElement(ss+"Alignment",new XAttribute(ss+"Vertical","Top")),new XElement(ss+"Interior",new XAttribute(ss+"Color","#"+color),new XAttribute(ss+"Pattern","Solid")),new XElement(ss+"Borders",new[]{"Bottom","Left","Right","Top"}.Select(side=>new XElement(ss+"Border",new XAttribute(ss+"Position",side),new XAttribute(ss+"LineStyle","Continuous"),new XAttribute(ss+"Weight",1)))))));
  var html=new StringBuilder("<html><head><meta charset='utf-8'></head><body><table xmlns:x='urn:schemas-microsoft-com:office:excel' border='1' style='border-collapse:collapse'>");var text=new StringBuilder();
  writer.WriteStartElement("Workbook",ss.NamespaceName);writer.WriteAttributeString("xmlns","ss",null,ss.NamespaceName);
  styles.WriteTo(writer);writer.WriteStartElement("Worksheet",ss.NamespaceName);writer.WriteAttributeString("ss","Name",ss.NamespaceName,"Evidence");writer.WriteStartElement("Table",ss.NamespaceName);
@@ -187,11 +190,11 @@ public static class Engine {
  if(c.Operation=="変更なし"){if(count>0)continue;Row(new[]{(db,"#ffffff"),(c.Operation,"#ffffff")}.Concat(columns.Select(_=>("","#ffffff"))));break;}
  // 削除行は主キーだけ削除前の値を残す。
  var values=c.After;var keyValues=c.Before;
- Row(new[]{(db,"#ffffff"),(c.Operation,c.Operation=="追加"?"#e2f0d9":c.Operation=="削除"?"#dddddd":"#ffffff")}.Concat(columns.Select((col,i)=>(values==null?(spec.Keys.Contains(col,StringComparer.OrdinalIgnoreCase)?Visible(keyValues?[i]):"〈行なし〉"):Visible(values[i]),e.Different.Contains(i)?"#ffc7ce":c.Changed.Contains(i)?"#fff2cc":"#ffffff")))); }
+ Row(new[]{(db,"#ffffff"),(c.Operation,c.Operation=="追加"?"#ddebf7":c.Operation=="削除"?"#dddddd":"#ffffff")}.Concat(columns.Select((col,i)=>(values==null?(spec.Keys.Contains(col,StringComparer.OrdinalIgnoreCase)?Visible(keyValues?[i]):"〈行なし〉"):Visible(values[i]),c.Operation=="追加"?"#ddebf7":c.Operation=="削除"?"#dddddd":c.Changed.Contains(i)?"#fff2cc":"#ffffff")))); }
  }
- // 全レコードの不一致列を集約し、末尾に1行だけ表示する。既存の非変更列の差は対象外。
+ // 行数が異なる表は全列×。同数なら変更行の操作後を列ごとに集約する。
  var different=evidence.SelectMany(e=>e.Different).ToHashSet();
- Row(new[]{("判定","#d9e2f3"),("","#ffffff")}.Concat(columns.Select((col,i)=>spec.Ignored.Contains(col,StringComparer.OrdinalIgnoreCase)?("除外","#ffffff"):different.Contains(i)?("×","#ffc7ce"):("◯","#e2f0d9"))));
+ Row(new[]{("判定","#d9e2f3"),("","#ffffff")}.Concat(columns.Select((col,i)=>pgCount!=sqlCount?("×","#ffc7ce"):spec.Ignored.Contains(col,StringComparer.OrdinalIgnoreCase)?("除外","#ffffff"):different.Contains(i)?("×","#ffc7ce"):("◯","#e2f0d9"))));
  if(!spreadsheetOnly)html.Append("</table></body></html>");
  writer.WriteEndElement();writer.WriteEndElement();writer.WriteEndElement();writer.Flush();
  return(spreadsheetOnly?"":html.ToString(),text.ToString(),"<?xml version=\"1.0\" encoding=\"utf-8\"?>"+xml);

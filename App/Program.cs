@@ -18,42 +18,42 @@ static class Program {
 class MainForm:Form {
  readonly string pgConnection="",sqlConnection="";
  readonly ComboBox table=new(){DropDownStyle=ComboBoxStyle.DropDownList,Width=300};
- readonly TextBox ignore=new(){Width=350,ReadOnly=true};
+ readonly TextBox ignore=new(){Width=620,ReadOnly=true};
  readonly Button pickIgnored=new(){Text="列を選択",AutoSize=true},pickColumns=new(){Text="列を選択",AutoSize=true};
  readonly TextBox tableSearch=new(){Width=175,PlaceholderText="テーブル名で絞り込み"};
  bool filteringTables;CommonTable[] allTables=[];TableColumn[] pgColumns=[],sqlColumns=[],availableColumns=[];
  readonly Button reload=new(){Text="テーブル一覧を再読込",AutoSize=true};
- readonly TextBox selectedColumns=new(){Width=350,ReadOnly=true};
+ readonly TextBox selectedColumns=new(){Width=620,ReadOnly=true};
  readonly FlowLayoutPanel filterRows=new(){Width=880,FlowDirection=FlowDirection.TopDown,WrapContents=false,AutoScroll=true};
  readonly FlowLayoutPanel panel=new(){Dock=DockStyle.Top,AutoSize=true,FlowDirection=FlowDirection.TopDown,WrapContents=false,Padding=new Padding(6)};
  readonly Button addFilter=new(){Text="＋ 条件を追加",AutoSize=true};
- readonly Button before=new(){Text="1. 操作前を取得",AutoSize=true},after=new(){Text="2. 操作後を取得・比較",AutoSize=true},copy=new(){Text="3. エビデンスをコピー",AutoSize=true,Enabled=false};
+ readonly Button before=new(){Text="操作前を取得",AutoSize=true},after=new(){Text="操作後を取得・比較",AutoSize=true},copy=new(){Text="エビデンスをコピー",AutoSize=true,Enabled=false};
  readonly Button cancel=new(){Text="中断",AutoSize=true,Enabled=false};
  readonly Label rowCounts=new(){Text="取得対象件数: 未確認",AutoSize=true,MaximumSize=new Size(870,0)};CancellationTokenSource? execution;string? captureStage;
- readonly Label status=new(){AutoSize=true,MaximumSize=new Size(870,0)};readonly DataGridView grid=new(){Dock=DockStyle.Fill,Visible=false,ReadOnly=true,AllowUserToAddRows=false,AutoSizeColumnsMode=DataGridViewAutoSizeColumnsMode.DisplayedCells};
+ readonly Label status=new(){AutoSize=true,MaximumSize=new Size(870,0)};readonly DataGridView grid=new(){Dock=DockStyle.Fill,Visible=false,ReadOnly=true,AllowUserToAddRows=false,BackgroundColor=SystemColors.Window,AutoSizeColumnsMode=DataGridViewAutoSizeColumnsMode.Fill};
  readonly bool demo;bool closingAllowed,stateBusy;string selectedTable="";ResultSummary[] results=[];
  // 各追跡対象の操作前は最初の比較基準。操作後を再取得しても置き換えない。
  readonly List<TrackedTable> targets=[];
- readonly ListBox trackedList=new(){Width=470,Height=76,HorizontalScrollbar=true};
+ readonly ListBox trackedList=new(){Width=550,Height=76,HorizontalScrollbar=true};
  readonly Button addTarget=new(){Text="追跡対象に追加・更新",AutoSize=true},removeTarget=new(){Text="対象から削除",AutoSize=true};
  bool refreshingTargets;
  bool HasBaseline=>targets.Count>0&&targets.All(t=>t.PgBefore!=null&&t.SqlBefore!=null);
  string? spreadsheetXml;readonly Control[] settings;
  public MainForm(bool demo=false,bool multipleDemo=false){this.demo=demo;Text="DBChangeLogger";ClientSize=new Size(900,300);BackColor=SystemColors.Window;
- void Field(string label,Control input){var line=new FlowLayoutPanel(){Width=870,Height=30};line.Controls.Add(new Label(){Text=label,Width=180,Height=23,TextAlign=ContentAlignment.MiddleLeft});line.Controls.Add(input);panel.Controls.Add(line);}
- var tableInputs=new FlowLayoutPanel(){Width=675,Height=28};table.Width=280;tableInputs.Controls.AddRange(new Control[]{tableSearch,table,reload});Field("テーブル一覧",tableInputs);
- var projectionInputs=new FlowLayoutPanel(){Width=460,Height=28};projectionInputs.Controls.AddRange(new Control[]{selectedColumns,pickColumns});Field("取得列",projectionInputs);
- var ignoreInputs=new FlowLayoutPanel(){Width=460,Height=28};ignoreInputs.Controls.AddRange(new Control[]{ignore,pickIgnored});Field("除外列",ignoreInputs);
+ void Field(string label,Control input){var line=new FlowLayoutPanel(){Width=870,Height=30};line.Controls.Add(new Label(){Text=label,Width=100,Height=27,TextAlign=ContentAlignment.MiddleLeft});line.Controls.Add(input);panel.Controls.Add(line);}
+ var tableInputs=new FlowLayoutPanel(){Width=750,Height=28};table.Width=390;tableInputs.Controls.AddRange(new Control[]{tableSearch,table,reload});Field("テーブル一覧",tableInputs);
+ var projectionInputs=new FlowLayoutPanel(){Width=750,Height=28};projectionInputs.Controls.AddRange(new Control[]{selectedColumns,pickColumns});Field("取得列",projectionInputs);
+ var ignoreInputs=new FlowLayoutPanel(){Width=750,Height=28};ignoreInputs.Controls.AddRange(new Control[]{ignore,pickIgnored});Field("除外列",ignoreInputs);
  tableSearch.TextChanged+=(_,_)=>FilterTables();
  pickColumns.Click+=(_,_)=>ChooseColumns(false);pickIgnored.Click+=(_,_)=>ChooseColumns(true);
  table.SelectedIndexChanged+=async(_,_)=>{if(filteringTables)return;UpdateTableSelection();await LoadColumnDefinitions();};
  reload.Click+=async(_,_)=>await LoadTables();
- var conditionHeader=new FlowLayoutPanel(){Width=870,Height=30};conditionHeader.Controls.AddRange(new Control[]{new Label(){Text="検索条件",Width=180,Height=23,TextAlign=ContentAlignment.MiddleLeft},addFilter});panel.Controls.Add(conditionHeader);
+ var conditionHeader=new FlowLayoutPanel(){Width=870,Height=30};conditionHeader.Controls.AddRange(new Control[]{new Label(){Text="検索条件",Width=100,Height=27,TextAlign=ContentAlignment.MiddleLeft},addFilter});panel.Controls.Add(conditionHeader);
  panel.Controls.Add(filterRows);AddFilterRow();addFilter.Click+=(_,_)=>AddFilterRow();
  cancel.Click+=(_,_)=>{execution?.Cancel();status.Text="中断しています…";};FormClosing+=async(_,e)=>{if(closingAllowed)return;e.Cancel=true;if(stateBusy){status.Text="保存・復元が完了するまでお待ちください。";return;}if(execution!=null){execution.Cancel();status.Text="処理を中断してから、もう一度閉じてください。";return;}try{Enabled=false;await SaveSession();closingAllowed=true;Close();}catch{Enabled=true;status.Text="前回の内容を保存できませんでした。保存先の空き容量・権限を確認してください。";}};
  var targetButtons=new FlowLayoutPanel(){Width=180,Height=76,FlowDirection=FlowDirection.TopDown};targetButtons.Controls.AddRange(new Control[]{addTarget,removeTarget});
- var targetInputs=new FlowLayoutPanel(){Width=675,Height=82};targetInputs.Controls.AddRange(new Control[]{trackedList,targetButtons});
- var targetLine=new FlowLayoutPanel(){Width=870,Height=86};targetLine.Controls.Add(new Label(){Text="追跡対象",Width=180,Height=23,TextAlign=ContentAlignment.MiddleLeft});targetLine.Controls.Add(targetInputs);panel.Controls.Add(targetLine);
+ var targetInputs=new FlowLayoutPanel(){Width=750,Height=82};targetInputs.Controls.AddRange(new Control[]{trackedList,targetButtons});
+ var targetLine=new FlowLayoutPanel(){Width=870,Height=86};targetLine.Controls.Add(new Label(){Text="追跡対象",Width=100,Height=27,TextAlign=ContentAlignment.MiddleLeft});targetLine.Controls.Add(targetInputs);panel.Controls.Add(targetLine);
  addTarget.Click+=(_,_)=>{try{var target=BuildTarget();var index=targets.FindIndex(t=>string.Equals(t.PgSpec.Name,target.PgSpec.Name,StringComparison.OrdinalIgnoreCase));if(index<0)targets.Add(target);else targets[index]=target;RefreshTargets();status.Text=$"追跡対象 {targets.Count}テーブル。操作前をまとめて取得できます。";}catch(InvalidOperationException){status.Text="有効なテーブルと列を選択してください。";}};
  removeTarget.Click+=(_,_)=>{if(trackedList.SelectedIndex>=0){targets.RemoveAt(trackedList.SelectedIndex);RefreshTargets();UpdateTableSelection();}};
  trackedList.SelectedIndexChanged+=(_,_)=>{if(!refreshingTargets&&execution==null&&trackedList.SelectedItem is TrackedTable target)ShowTarget(target);};
@@ -171,7 +171,7 @@ class MainForm:Form {
  filterRows.Height=Math.Min(190,rows.Length*34+6);QueueFitWindow();
  }
  void QueueFitWindow(){if(IsHandleCreated&&!IsDisposed)BeginInvoke((Action)FitWindow);}
- void FitWindow(){if(IsDisposed)return;panel.PerformLayout();var height=panel.PreferredSize.Height+(grid.Visible?280:0)+4;if(ClientSize.Height!=height)ClientSize=new Size(ClientSize.Width,height);}
+ void FitWindow(){if(IsDisposed)return;panel.PerformLayout();var height=panel.PreferredSize.Height+(grid.Visible?Math.Min(220,grid.ColumnHeadersHeight+grid.RowTemplate.Height*Math.Max(1,grid.Rows.Count)+8):0)+4;if(ClientSize.Height!=height)ClientSize=new Size(ClientSize.Width,height);}
 
  void UpdateTableSelection() {
  var selected=table.SelectedItem as CommonTable;
@@ -258,29 +258,59 @@ class MainForm:Form {
 }
 
 class FilterRow:FlowLayoutPanel {
- readonly ComboBox column=new(){Width=145,DropDownStyle=ComboBoxStyle.DropDownList};
+ readonly SearchColumnCombo column=new(){Width=190};
  readonly TextBox value=new(){Width=105},upper=new(){Width=100};
- readonly Button pickColumn=new(){Text="選択",Width=45,Height=23};TableColumn[] definitions=[];string pendingColumn="";
+ TableColumn[] definitions=[];string pendingColumn="";
  readonly ComboBox op=new(){DropDownStyle=ComboBoxStyle.DropDownList,Width=55},type=new(){DropDownStyle=ComboBoxStyle.DropDownList,Width=75};
  public ComboBox Join {get;}=new(){DropDownStyle=ComboBoxStyle.DropDownList,Width=65};
- public Button Remove {get;}=new(){Text="削除",Width=55,Height=23};
- public SavedFilter Saved=>new(new(column.Text,op.Text,value.Text,type.Text,upper.Text),Join.Text);
+ public Button Remove {get;}=new(){Text="削除",Width=55,Height=25};
+ public SavedFilter Saved=>new(new(column.Selection,op.Text,value.Text,type.Text,upper.Text),Join.Text);
  public void Restore(SavedFilter saved){pendingColumn=saved.Filter.Column;column.SelectedItem=pendingColumn;op.SelectedItem=saved.Filter.Operator;value.Text=saved.Filter.Value;upper.Text=saved.Filter.Upper;Join.SelectedItem=saved.Join;}
  public TableFilter? Condition=>column.SelectedItem is not string name||name.Length==0?null:new(name,op.Text,value.Text,type.Text,upper.Text);
- public void BindColumns(TableColumn[] columns){var previous=column.Text.Length>0?column.Text:pendingColumn;definitions=columns;column.Items.Clear();column.Items.Add("");column.Items.AddRange(columns.Select(c=>c.Name).ToArray());column.SelectedItem=column.Items.Contains(previous)?previous:"";pendingColumn="";}
+ public void BindColumns(TableColumn[] columns){var previous=column.Selection.Length>0?column.Selection:pendingColumn;definitions=columns;column.Items.Clear();column.Items.Add("");column.Items.AddRange(columns.Select(c=>c.Name).ToArray());column.SelectedItem=column.Items.Contains(previous)?previous:"";pendingColumn="";}
  public FilterRow() {
  Width=850;Height=28;WrapContents=false;Margin=new Padding(3);
- Label Caption(string text,int width)=>new(){Text=text,Width=width,Height=23,TextAlign=ContentAlignment.MiddleLeft};
+ Label Caption(string text,int width)=>new(){Text=text,Width=width,Height=25,TextAlign=ContentAlignment.MiddleLeft};
  Join.Items.AddRange(new object[]{"AND","OR"});Join.SelectedIndex=0;
- var joinSlot=new Panel(){Width=65,Height=23};Join.Dock=DockStyle.Fill;joinSlot.Controls.Add(Join);
+ var joinSlot=new Panel(){Width=65,Height=25};Join.Dock=DockStyle.Fill;joinSlot.Controls.Add(Join);
  op.Items.AddRange(new object[]{"=",">=","<=","範囲"});op.SelectedIndex=0;
  type.Items.AddRange(new object[]{"文字列","数値"});type.SelectedIndex=0;type.Enabled=false;
- column.SelectedIndexChanged+=(_,_)=>type.SelectedItem=definitions.FirstOrDefault(c=>c.Name==column.Text)?.Numeric==true?"数値":"文字列";
- pickColumn.Click+=(_,_)=>{var chosen=ElementPicker.Choose(this,"検索列を選択",definitions.Select(c=>c.Name).ToArray(),[],false);if(chosen is {Length:>0})column.SelectedItem=chosen[0];};
+ column.SelectedIndexChanged+=(_,_)=>type.SelectedItem=definitions.FirstOrDefault(c=>c.Name==column.Selection)?.Numeric==true?"数値":"文字列";
  var upperLabel=Caption("〜",14);upper.Visible=upperLabel.Visible=false;
  op.SelectedIndexChanged+=(_,_)=>upper.Visible=upperLabel.Visible=op.Text=="範囲";
- Controls.AddRange(new Control[]{joinSlot,Caption("検索列",44),column,pickColumn,Caption("条件",36),op,type,Caption("値",18),value,upperLabel,upper,Remove});
- foreach(Control c in Controls)c.Margin=new Padding(2,2,2,0);
+ Controls.AddRange(new Control[]{joinSlot,Caption("検索列",44),column,Caption("条件",36),op,type,Caption("値",18),value,upperLabel,upper,Remove});
+ foreach(Control c in Controls)c.Margin=new Padding(2,1,2,0);
+ }
+}
+
+// 候補を絞り込まず、部分一致へジャンプする。編集文字は表示専用でDB識別子として使わない。
+class SearchColumnCombo:ComboBox {
+ string query="";int original=-1;bool canceled;
+ public string Selection=>SelectedItem as string??"";
+ public SearchColumnCombo(){DropDownStyle=ComboBoxStyle.DropDownList;DrawMode=DrawMode.OwnerDrawFixed;IntegralHeight=false;DropDownHeight=260;AccessibleName="検索列";}
+ protected override void OnDropDown(EventArgs e){original=SelectedIndex;query="";canceled=false;base.OnDropDown(e);}
+ protected override void OnSelectionChangeCommitted(EventArgs e){query="";base.OnSelectionChangeCommitted(e);}
+ protected override void OnDropDownClosed(EventArgs e){if(canceled||(query.Length>0&&!Selection.Contains(query,StringComparison.OrdinalIgnoreCase)))SelectedIndex=original;query="";Invalidate();base.OnDropDownClosed(e);}
+ protected override void OnKeyPress(KeyPressEventArgs e){
+ if(!char.IsControl(e.KeyChar)){if(!DroppedDown)DroppedDown=true;query+=e.KeyChar;Jump(0);e.Handled=true;Invalidate();}base.OnKeyPress(e);
+ }
+ void Jump(int direction){
+ for(var offset=direction==0?0:1;offset<Items.Count+(direction==0?0:1);offset++){
+ var index=direction==0?offset:(SelectedIndex+(direction*offset)+Items.Count*2)%Items.Count;
+ if((Items[index]?.ToString()??"").Contains(query,StringComparison.OrdinalIgnoreCase)){SelectedIndex=index;return;}}
+ }
+ protected override bool ProcessCmdKey(ref Message msg,Keys keyData){
+ if(DroppedDown){
+ if(keyData==Keys.Escape){canceled=true;DroppedDown=false;return true;}
+ if(keyData==Keys.Enter){DroppedDown=false;return true;}
+ if(keyData==Keys.Back){if(query.Length>0)query=query[..^1];Jump(0);Invalidate();return true;}
+ if(query.Length>0&&keyData is Keys.Down or Keys.Up){Jump(keyData==Keys.Down?1:-1);Invalidate();return true;}
+ }return base.ProcessCmdKey(ref msg,keyData);
+ }
+ protected override void OnDrawItem(DrawItemEventArgs e){
+ e.DrawBackground();var edit=(e.State&DrawItemState.ComboBoxEdit)!=0;
+ var text=edit&&DroppedDown&&query.Length>0?query:e.Index>=0?Items[e.Index]?.ToString()??"":"";
+ TextRenderer.DrawText(e.Graphics,text,e.Font,e.Bounds,e.ForeColor,TextFormatFlags.Left|TextFormatFlags.VerticalCenter|TextFormatFlags.EndEllipsis);e.DrawFocusRectangle();base.OnDrawItem(e);
  }
 }
 

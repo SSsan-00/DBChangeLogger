@@ -33,9 +33,11 @@ public sealed class ExcelArtifactTests
         var cells = sheet.Descendants(ns + "c").ToDictionary(c => (string)c.Attribute("r")!);
         Assert.AreEqual(0, sheet.Descendants(ns + "f").Count(), "貼り付け値が数式になっています。");
 
-        var d = DemoEvidence.CreateSingleUpdate();
-        var evidence = Engine.Compare(d.PgBefore, d.PgAfter, d.SqlBefore, d.SqlAfter, d.Spec);
-        var html = Engine.Render(d.PgBefore.Columns, evidence, d.Spec, d.PgBefore, d.PgAfter, d.SqlBefore, d.SqlAfter).Html;
+        var demos=Environment.GetEnvironmentVariable("EVIDENCE_EXCEL_MULTI")=="1"?DemoEvidence.CreateMultiple():[DemoEvidence.CreateSingleUpdate()];
+        var html=string.Concat(demos.Select((d,index)=>{
+            var evidence=Engine.Compare(d.PgBefore,d.PgAfter,d.SqlBefore,d.SqlAfter,d.Spec);
+            return (index==0?"":"<tr></tr>")+Engine.Render(d.PgBefore.Columns,evidence,d.Spec,d.PgBefore,d.PgAfter,d.SqlBefore,d.SqlAfter).Html;
+        }));
         var rows = Regex.Matches(html, "<tr>(.*?)</tr>", RegexOptions.Singleline);
         for (var r = 0; r < rows.Count; r++)
         {
@@ -55,7 +57,7 @@ public sealed class ExcelArtifactTests
                 if (wanted != "FFFFFF") Assert.AreEqual("FF" + wanted, (string?)color?.Attribute("rgb"), address + "の色が違います。");
             }
         }
-        Assert.AreEqual(5, rows.Count);
+        Assert.AreEqual(demos.Length==1?5:11, rows.Count);
         Assert.AreEqual(rows.Cast<System.Text.RegularExpressions.Match>().Sum(row=>Regex.Matches(row.Groups[1].Value,"<td").Count),cells.Count(c=>c.Value.Element(ns+"v")!=null||c.Value.Element(ns+"is")!=null));
     }
 }
