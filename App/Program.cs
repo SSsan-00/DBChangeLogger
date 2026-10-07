@@ -34,7 +34,7 @@ class MainForm:Form {
  readonly bool demo;bool closingAllowed,stateBusy;string selectedTable="";ResultSummary[] results=[];
  // 各追跡対象の操作前は最初の比較基準。操作後を再取得しても置き換えない。
  readonly List<TrackedTable> targets=[];
- readonly ListBox trackedList=new(){Width=550,Height=76,HorizontalScrollbar=true};
+ readonly ListBox trackedList=new(){Width=735,Height=24,HorizontalScrollbar=true,IntegralHeight=false};
  readonly Button addTarget=new(){Text="追跡対象に追加・更新",AutoSize=true},removeTarget=new(){Text="対象から削除",AutoSize=true};
  bool refreshingTargets;
  bool HasBaseline=>targets.Count>0&&targets.All(t=>t.PgBefore!=null&&t.SqlBefore!=null);
@@ -51,9 +51,9 @@ class MainForm:Form {
  var conditionHeader=new FlowLayoutPanel(){Width=870,Height=30};conditionHeader.Controls.AddRange(new Control[]{new Label(){Text="検索条件",Width=100,Height=27,TextAlign=ContentAlignment.MiddleLeft},addFilter});panel.Controls.Add(conditionHeader);
  panel.Controls.Add(filterRows);AddFilterRow();addFilter.Click+=(_,_)=>AddFilterRow();
  cancel.Click+=(_,_)=>{execution?.Cancel();status.Text="中断しています…";};FormClosing+=async(_,e)=>{if(closingAllowed)return;e.Cancel=true;if(stateBusy){status.Text="保存・復元が完了するまでお待ちください。";return;}if(execution!=null){execution.Cancel();status.Text="処理を中断してから、もう一度閉じてください。";return;}try{Enabled=false;await SaveSession();closingAllowed=true;Close();}catch{Enabled=true;status.Text="前回の内容を保存できませんでした。保存先の空き容量・権限を確認してください。";}};
- var targetButtons=new FlowLayoutPanel(){Width=180,Height=76,FlowDirection=FlowDirection.TopDown};targetButtons.Controls.AddRange(new Control[]{addTarget,removeTarget});
- var targetInputs=new FlowLayoutPanel(){Width=750,Height=82};targetInputs.Controls.AddRange(new Control[]{trackedList,targetButtons});
- var targetLine=new FlowLayoutPanel(){Width=870,Height=86};targetLine.Controls.Add(new Label(){Text="追跡対象",Width=100,Height=27,TextAlign=ContentAlignment.MiddleLeft});targetLine.Controls.Add(targetInputs);panel.Controls.Add(targetLine);
+ var targetButtons=new FlowLayoutPanel(){Width=750,Height=30,WrapContents=false};targetButtons.Controls.AddRange(new Control[]{addTarget,removeTarget});
+ var targetInputs=new FlowLayoutPanel(){Width=750,AutoSize=true,FlowDirection=FlowDirection.TopDown,WrapContents=false};targetInputs.Controls.AddRange(new Control[]{trackedList,targetButtons});
+ var targetLine=new FlowLayoutPanel(){Width=870,AutoSize=true,WrapContents=false};targetLine.Controls.Add(new Label(){Text="追跡対象",Width=100,Height=27,TextAlign=ContentAlignment.MiddleLeft});targetLine.Controls.Add(targetInputs);panel.Controls.Add(targetLine);
  addTarget.Click+=(_,_)=>{try{var target=BuildTarget();var index=targets.FindIndex(t=>string.Equals(t.PgSpec.Name,target.PgSpec.Name,StringComparison.OrdinalIgnoreCase));if(index<0)targets.Add(target);else targets[index]=target;RefreshTargets();status.Text=$"追跡対象 {targets.Count}テーブル。操作前をまとめて取得できます。";}catch(InvalidOperationException){status.Text="有効なテーブルと列を選択してください。";}};
  removeTarget.Click+=(_,_)=>{if(trackedList.SelectedIndex>=0){targets.RemoveAt(trackedList.SelectedIndex);RefreshTargets();UpdateTableSelection();}};
  trackedList.SelectedIndexChanged+=(_,_)=>{if(!refreshingTargets&&execution==null&&trackedList.SelectedItem is TrackedTable target)ShowTarget(target);};
@@ -62,7 +62,7 @@ class MainForm:Form {
  reset.Click+=(_,_)=>{ClearCaptured();foreach(var c in settings)c.Enabled=true;after.Enabled=copy.Enabled=false;UpdateTableSelection();grid.DataSource=null;grid.Visible=false;rowCounts.Text="取得対象件数: 未確認";reload.Enabled=!string.IsNullOrEmpty(pgConnection);status.Text=(table.SelectedItem as CommonTable)?.KeyError??(!string.IsNullOrEmpty(pgConnection)?"設定を変更できます。操作前から取得してください。":"接続先が設定されていません。作成者に設定済みのアプリを依頼してください。");};
  var buttons=new FlowLayoutPanel(){Width=870,Height=34};buttons.Controls.AddRange(new Control[]{before,after,copy,reset,cancel});panel.Controls.Add(buttons);panel.Controls.Add(rowCounts);panel.Controls.Add(status);
  Controls.Add(grid);Controls.Add(panel);after.Enabled=false;
- Shown+=(_,_)=>FitWindow();grid.VisibleChanged+=(_,_)=>QueueFitWindow();status.SizeChanged+=(_,_)=>QueueFitWindow();rowCounts.SizeChanged+=(_,_)=>QueueFitWindow();
+ Shown+=(_,_)=>{ResizeTargets();FitWindow();};grid.VisibleChanged+=(_,_)=>QueueFitWindow();status.SizeChanged+=(_,_)=>QueueFitWindow();rowCounts.SizeChanged+=(_,_)=>QueueFitWindow();
  before.Click+=async(_,_)=>await Execute(CaptureBefore);
  after.Click+=async(_,_)=>await Execute(CaptureAfter);
  copy.Click+=(_,_)=>{try{var data=new DataObject();data.SetData("XML Spreadsheet",false,new MemoryStream(Encoding.UTF8.GetBytes(spreadsheetXml!+"\0")));Clipboard.SetDataObject(data,true);status.Text="コピーしました。Excelの貼り付け先セルで Ctrl+V を押してください。";}catch{MessageBox.Show("コピーできませんでした。もう一度お試しください。");}};
@@ -116,7 +116,9 @@ class MainForm:Form {
  finally{stateBusy=false;Enabled=true;}
  }
  void RefreshResults(){grid.DataSource=results.Select(r=>new{r.テーブル,r.PG操作,r.SQL操作,r.変更列,r.判定}).ToArray();grid.Visible=results.Length>0;}
- void RefreshTargets(){refreshingTargets=true;trackedList.Items.Clear();trackedList.Items.AddRange(targets.ToArray());refreshingTargets=false;}
+ void RefreshTargets(){refreshingTargets=true;trackedList.Items.Clear();trackedList.Items.AddRange(targets.ToArray());ResizeTargets();refreshingTargets=false;}
+ // 一覧は最大8行まで伸ばす。それ以上はスクロールし、少数のときも固定高の空白を残さない。
+ void ResizeTargets(){trackedList.HorizontalExtent=trackedList.Items.Cast<object>().Select(t=>TextRenderer.MeasureText(t.ToString(),trackedList.Font).Width+8).DefaultIfEmpty(0).Max();trackedList.Height=Math.Max(1,Math.Min(8,trackedList.Items.Count))*trackedList.ItemHeight+4+(trackedList.HorizontalExtent>trackedList.ClientSize.Width?SystemInformation.HorizontalScrollBarHeight:0);QueueFitWindow();}
  void ClearCaptured(){for(var i=0;i<targets.Count;i++)targets[i]=targets[i] with{PgBefore=null,SqlBefore=null,Counts=""};spreadsheetXml=null;results=[];RefreshTargets();}
  TrackedTable BuildTarget(){
  if(table.SelectedItem is not CommonTable selected||availableColumns.Length==0)throw new InvalidOperationException("テーブルを選択してください。");

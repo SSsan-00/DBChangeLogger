@@ -80,3 +80,9 @@ MSTestの通常・Excelファイル検査17件が成功。旧比較とのラン�
 - 保存例: C:/work/DbEvidence/outputs/verification-20261007/latest-evidence.xlsx。実DBの取得・接続・統合テストおよび1億件ベンチマークは今回再実行していない。
 
 複数テーブルのExcel検査は、`EVIDENCE_EXCEL_FILE` に保存したxlsx、`EVIDENCE_EXCEL_MULTI=1` を設定して `dotnet test Tests/Tests.csproj --filter "TestCategory=ExcelArtifact"` を実行する。
+
+## 2026-10-08: 追跡対象の件数に応じた高さ
+
+一覧を1～8行の範囲で件数に合わせて伸縮させ、追加・更新／削除ボタンを一覧の下へ移した。8件を超えた場合は縦スクロール、長いテーブル名は横スクロールを使用し、その分の高さも確保する。Windowsデモで追跡対象1件・2件の一覧が全行表示され、枠の余分な空白が減ることを確認。
+
+追加一致・削除一致・更新位置が違うが最終値は一致の3サンプルを実際のEngine.Compare/Renderで生成した。各xlsxの値、文字列型、文字列書式、操作色と判定色、数式がないことを照合し、3表のレンダリングを確認。以前のlatest-evidence.xlsxのC10/D10に格納された13は、sharedStrings.xml内の空文字の参照番号であり、レコード値ではない。
