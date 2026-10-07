@@ -178,11 +178,13 @@ public static class Engine {
  if(spec.Columns is {Length:>0})Row(new[]{("取得列: "+string.Join(", ",columns),"#ffffff")});
  if(spec.Ignored.Length>0)Row(new[]{("除外列: "+string.Join(", ",spec.Ignored),"#ffffff")});
  Row(new[]{"DB","操作"}.Concat(columns).Select(c=>(c,"#d9e2f3")));
+ foreach(var (db,pg) in new[]{("PostgreSQL",true),("SQL Server",false)}) {
  foreach(var e in evidence) {
- foreach(var (db,c) in new[]{("PostgreSQL",e.Pg),("SQL Server",e.Sql)}) {
- // 変更した主キーには両DBの行を並べる。相手側が未変更でも操作後の値を比較できるよう残す。
- // 削除／未存在の行は主キーだけ残す。相手側にしか存在しないときは、その行から主キーを補う。
- var values=c.After;var keyValues=c.Before??e.Pg.After??e.Sql.After??e.Pg.Before??e.Sql.Before;
+ var c=pg?e.Pg:e.Sql;
+ // DBごとに同じ主キー順で出力する。未変更側の行は値を空欄にし、更新されたレコードと区別する。
+ if(c.Operation=="変更なし"){Row(new[]{(db,"#ffffff"),(c.Operation,"#ffffff")}.Concat(columns.Select(_=>("","#ffffff"))));continue;}
+ // 削除行は主キーだけ削除前の値を残す。
+ var values=c.After;var keyValues=c.Before;
  Row(new[]{(db,"#ffffff"),(c.Operation,c.Operation=="追加"?"#e2f0d9":c.Operation=="削除"?"#dddddd":"#ffffff")}.Concat(columns.Select((col,i)=>(values==null?(spec.Keys.Contains(col,StringComparer.OrdinalIgnoreCase)?Visible(keyValues?[i]):"〈行なし〉"):Visible(values[i]),e.Different.Contains(i)?"#ffc7ce":c.Changed.Contains(i)?"#fff2cc":"#ffffff")))); }
  }
  // 全レコードの不一致列を集約し、末尾に1行だけ表示する。既存の非変更列の差は対象外。

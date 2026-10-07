@@ -76,9 +76,10 @@ public sealed class EvidenceTests
         CollectionAssert.AreEqual(new[]{"DB","操作"}.Concat(d.PgBefore.Columns).ToArray(),headers);
         Assert.IsFalse(headers.Contains("主キー")||headers.Contains("時点"));
         Assert.AreEqual(12,rows.Length);
-        Assert.AreEqual(2,rows.Count(r=>r[2]=="5"));
-        var unchanged=rows.Single(r=>r[2]=="5"&&r[0]=="SQL Server");
-        Assert.AreEqual("変更なし",unchanged[1]);Assert.AreEqual("50",unchanged[4]);
+        Assert.AreEqual(1,rows.Count(r=>r[2]=="5"));
+        var unchanged=rows.Single(r=>r[1]=="変更なし"&&r[0]=="SQL Server");
+        Assert.IsTrue(unchanged.Skip(2).All(string.IsNullOrEmpty));
+        CollectionAssert.AreEqual(Enumerable.Repeat("PostgreSQL",6).Concat(Enumerable.Repeat("SQL Server",6)).ToArray(),rows.Select(r=>r[0]).ToArray());
         Assert.IsFalse(rows.Any(r=>r[2] is "3" or "7"));
         Assert.IsTrue(rows.Where(r=>r[1]=="削除").All(r=>r[2]=="2"&&r.Skip(3).All(v=>v=="〈行なし〉")));
         var judgments=allRows.Where(r=>r[0]=="判定").ToArray();
@@ -114,9 +115,9 @@ public sealed class EvidenceTests
     public void Render_OneSidedChangesRetainUnchangedAndAbsentCounterpartRows()
     {
         var d=DemoEvidence.CreateSingleUpdate();var empty=d.PgBefore with{Rows=new()};
-        foreach(var (pb,pa,sb,sa,unchangedDb,expectedAmount) in new[]{
-            (d.PgBefore,d.PgBefore,d.SqlBefore,d.SqlAfter,"PostgreSQL","10"),
-            (empty,d.PgAfter,empty,empty,"SQL Server","〈行なし〉")})
+        foreach(var (pb,pa,sb,sa,unchangedDb) in new[]{
+            (d.PgBefore,d.PgBefore,d.SqlBefore,d.SqlAfter,"PostgreSQL"),
+            (empty,d.PgAfter,empty,empty,"SQL Server")})
         {
             var changes=Engine.Compare(pb,pa,sb,sa,d.Spec);
             XNamespace ss="urn:schemas-microsoft-com:office:spreadsheet";
@@ -124,8 +125,8 @@ public sealed class EvidenceTests
                 .Descendants(ss+"Row").Skip(2).Take(2).Select(r=>r.Descendants(ss+"Data").Select(c=>c.Value).ToArray()).ToArray();
             Assert.AreEqual(2,rows.Length);
             var counterpart=rows.Single(r=>r[0]==unchangedDb);
-            CollectionAssert.AreEqual(new[]{unchangedDb,"変更なし","1"},counterpart.Take(3).ToArray());
-            Assert.AreEqual(expectedAmount,counterpart[4]);
+            CollectionAssert.AreEqual(new[]{unchangedDb,"変更なし"},counterpart.Take(2).ToArray());
+            Assert.IsTrue(counterpart.Skip(2).All(string.IsNullOrEmpty));
         }
     }
 
