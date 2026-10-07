@@ -80,7 +80,7 @@ public sealed class EvidenceTests
         Assert.IsFalse(rows.Any(r=>r[1]=="変更なし"));
         CollectionAssert.AreEqual(Enumerable.Repeat("PostgreSQL",6).Concat(Enumerable.Repeat("SQL Server",5)).ToArray(),rows.Select(r=>r[0]).ToArray());
         Assert.IsFalse(rows.Any(r=>r[2] is "3" or "7"));
-        Assert.IsTrue(rows.Where(r=>r[1]=="削除").All(r=>r[2]=="2"&&r.Skip(3).All(v=>v=="〈行なし〉")));
+        Assert.IsTrue(rows.Where(r=>r[1]=="削除").All(r=>r.Skip(2).All(v=>v=="〈行なし〉")));
         var judgments=allRows.Where(r=>r[0]=="判定").ToArray();
         Assert.AreEqual(1,judgments.Length);
         Assert.AreEqual("判定",allRows[^1][0]);

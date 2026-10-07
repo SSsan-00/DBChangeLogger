@@ -188,9 +188,9 @@ public static class Engine {
  var c=pg?e.Pg:e.Sql;
  // DBごとに変更行だけ出力する。変更が0件のDBだけ空欄の代表行を1行残し、行数は揃えない。
  if(c.Operation=="変更なし"){if(count>0)continue;Row(new[]{(db,"#ffffff"),(c.Operation,"#ffffff")}.Concat(columns.Select(_=>("","#ffffff"))));break;}
- // 削除行は主キーだけ削除前の値を残す。
- var values=c.After;var keyValues=c.Before;
- Row(new[]{(db,"#ffffff"),(c.Operation,c.Operation=="追加"?"#ddebf7":c.Operation=="削除"?"#dddddd":"#ffffff")}.Concat(columns.Select((col,i)=>(values==null?(spec.Keys.Contains(col,StringComparer.OrdinalIgnoreCase)?Visible(keyValues?[i]):"〈行なし〉"):Visible(values[i]),c.Operation=="追加"?"#ddebf7":c.Operation=="削除"?"#dddddd":c.Changed.Contains(i)?"#fff2cc":"#ffffff")))); }
+ // 削除行の表示は全列「行なし」。主キーによる対応付けはCompareで済ませ、削除前の値は出力しない。
+ var values=c.After;
+ Row(new[]{(db,"#ffffff"),(c.Operation,c.Operation=="追加"?"#ddebf7":c.Operation=="削除"?"#dddddd":"#ffffff")}.Concat(columns.Select((col,i)=>(values==null?"〈行なし〉":Visible(values[i]),c.Operation=="追加"?"#ddebf7":c.Operation=="削除"?"#dddddd":c.Changed.Contains(i)?"#fff2cc":"#ffffff")))); }
  }
  // 行数が異なる表は全列×。同数なら変更行の操作後を列ごとに集約する。
  var different=evidence.SelectMany(e=>e.Different).ToHashSet();
