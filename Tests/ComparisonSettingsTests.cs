@@ -21,6 +21,55 @@ public class ComparisonSettingsTests {
  static string[] Values(XElement row)=>row.Descendants(Ss+"Data").Select(c=>c.Value).ToArray();
 
  [TestMethod]
+ public void AutomaticMatchingKeepsSequenceAndDateDifferencesInJudgment() {
+  var columns=new[]{"id","name","amount","registered","version"};
+  Snapshot Rows(params string?[][] rows)=>new(columns,rows.ToDictionary(r=>JsonSerializer.Serialize(new[]{r[0]}),r=>r),DateTimeOffset.UnixEpoch);
+  var p=new TableSpec("public","auto",["id"],[],AutoMatch:true,Definition:[new("id","Int32","integer"),new("name","String","text"),new("amount","Decimal","numeric"),new("registered","DateTime","timestamp without time zone"),new("version","Byte[]","bytea")]);
+  var s=p with{Schema="dbo",Definition=[new("version","Byte[]","timestamp")]};p=p.WithAutomaticMetadata(s);
+  var pb=Rows(["1","A","10","old","01"],["2","B","10","old","01"]);var sb=Rows(["99","B","11","other","02"],["98","A","12","other","02"]);
+  var pa=Rows(["1","A","20","date1","03"],["2","B","30","date1","03"]);var sa=Rows(["99","B","30","date2","04"],["98","A","20","date2","04"]);
+  var changes=Engine.Compare(pb,pa,sb,sa,p);Assert.AreEqual(2,changes.Count);
+  CollectionAssert.AreEqual(new[]{"[\"98\"]","[\"99\"]"},changes.Select(c=>c.Sql.Key).ToArray());
+  Assert.IsTrue(changes.All(c=>!c.Match&&c.Different.SequenceEqual(new[]{0,3,4})));
+  var rows=XDocument.Parse(Engine.Render(columns,changes,p,pb,pa,sb,sa,true).SpreadsheetXml).Descendants(Ss+"Row").ToArray();
+  CollectionAssert.AreEqual(new[]{"判定","","×","◯","◯","×","×"},Values(rows[^1]));
+  Assert.AreEqual("Cffc7ce",(string?)rows[^1].Elements(Ss+"Cell").ElementAt(2).Attribute(Ss+"StyleID"));
+  Assert.IsTrue(Values(rows[1])[0].Contains("registered, version"));
+  var reversed=sa with{Columns=columns.Reverse().ToArray(),Rows=sa.Rows.ToDictionary(r=>r.Key,r=>r.Value.Reverse().ToArray())};
+  CollectionAssert.AreEqual(changes[0].Different,Engine.Compare(pb,pa,sb,reversed,p)[0].Different);
+  Assert.ThrowsExactly<OperationCanceledException>(()=>Engine.Compare(pb,pa,sb,sa,p,new CancellationToken(true)));
+ }
+
+ [TestMethod]
+ public void AutomaticMatchingRejectsAmbiguityAndMissingOrInsufficientValues() {
+  var spec=Spec with{MatchKeys=null,ComparisonIgnored=null,AutoMatch=true};
+  var pb=Snap(["1","A","1","same","10","0"],["2","A","1","same","10","0"]);
+  var pa=Snap(["1","A","1","same","20","0"],["2","A","1","same","20","0"]);
+  var sb=Snap(["98","A","1","same","10","0"],["99","A","1","same","10","0"]);
+  var sa=Snap(["98","A","1","same","20","0"],["99","A","1","same","20","0"]);
+  var result=Engine.Compare(pb,pa,sb,sa,spec);Assert.AreEqual(2,result.Count);Assert.IsTrue(result.All(c=>!c.Match&&c.Different.SequenceEqual(new[]{0,1,2,3,4})));
+  sa.Rows["[\"99\"]"][4]="21";Assert.IsTrue(Engine.Compare(pb,pa,sb,sa,spec).All(c=>!c.Match));
+  Assert.IsTrue(Engine.Compare(pb,pa,sb,sb,spec).All(c=>!c.Match&&c.Sql.Operation=="変更なし"));
+  Assert.IsTrue(Values(Render(pb,pa,sb,sb,spec)[^1]).Skip(2).All(v=>v=="×"));
+  var noMaterial=spec with{AutoMatchExcluded=Columns};Assert.IsTrue(Engine.Compare(Snap(),pa,Snap(),sa,noMaterial).All(c=>!c.Match));
+  var nulls=Snap(["1",null,null,null,null,"0"]);var nullOther=Snap(["9",null,null,null,null,"0"]);
+  Assert.IsTrue(Engine.Compare(Snap(),nulls,Snap(),nullOther,spec).All(c=>!c.Match));
+ }
+
+ [TestMethod]
+ public void AutomaticMatchingHandlesAddsDeletesAndDoesNotTreatDifferentOperationsAsEqual() {
+  var spec=Spec with{MatchKeys=null,ComparisonIgnored=null,AutoMatch=true};
+  var pg=Snap(["1","A","1","same","20","0"]);var sql=Snap(["9","A","1","same","20","0"]);
+  foreach(var (pb,pa,sb,sa) in new[]{(Snap(),pg,Snap(),sql),(pg,Snap(),sql,Snap())}) {
+   var change=Engine.Compare(pb,pa,sb,sa,spec).Single();CollectionAssert.AreEqual(new[]{0},change.Different);
+   if(change.Pg.Operation=="削除")Assert.IsTrue(Render(pb,pa,sb,sa,spec).Where(r=>Values(r).ElementAtOrDefault(1)=="削除").All(r=>Values(r).Skip(2).All(v=>v=="〈行なし〉")));
+  }
+  Assert.IsTrue(Engine.Compare(pg,Snap(),Snap(),sql,spec).All(c=>!c.Match&&c.Different.Length==5));
+  Assert.IsTrue(Engine.Compare(pg,Snap(),pg,Snap(),spec).Single().Match);
+  Assert.IsTrue(Engine.Compare(Snap(),pg,Snap(),pg,spec).Single().Match);
+ }
+
+ [TestMethod]
  public void DifferentSequencesMatchByCompositeBusinessKeyAndKeepColumnColors() {
   var (pb,pa,sb,sa)=Updates();var result=Engine.Compare(pb,pa,sb,sa,Spec);
   Assert.AreEqual(2,result.Count);Assert.IsTrue(result.All(e=>e.Match));
@@ -144,6 +193,36 @@ public class ComparisonSettingsTests {
   }
  }
 
+ [TestMethod,TestCategory("Integration")]
+ public async Task RealDatabasesAutomaticallyPairRowsButRejectSequenceDateAndRowversionDifferences() {
+  if(Environment.GetEnvironmentVariable("EVIDENCE_RUN_BUSINESS_INTEGRATION")!="1")Assert.Inconclusive("明示した検証DBだけで実行します。");
+  var pg=Environment.GetEnvironmentVariable("EVIDENCE_CAPTURE_PG")??throw new InvalidOperationException();
+  var sql=Environment.GetEnvironmentVariable("EVIDENCE_CAPTURE_SQL")??throw new InvalidOperationException();var name="auto_match_"+Guid.NewGuid().ToString("N");
+  async Task Execute(bool p,string query) {
+   await using System.Data.Common.DbConnection db=p?new Npgsql.NpgsqlConnection(pg):new Microsoft.Data.SqlClient.SqlConnection(sql);
+   await db.OpenAsync();await using var cmd=db.CreateCommand();cmd.CommandText=query;await cmd.ExecuteNonQueryAsync();
+  }
+  try {
+   foreach(var p in new[]{true,false}) {
+    var table=(p?"public.":"dbo.")+name;var version=p?"bytea DEFAULT decode('01','hex')":"rowversion";
+    await Execute(p,$"CREATE TABLE {table}(id int PRIMARY KEY,name varchar(40),amount decimal(12,2),registered date,version {version}); INSERT INTO {table}(id,name,amount,registered) VALUES({(p?1:99)},'A',10,'2026-10-{(p?8:9):00}'),({(p?2:98)},'B',10,'2026-10-{(p?8:9):00}');");
+   }
+   var pSpec=new TableSpec("public",name,["id"],[],AutoMatch:true,Definition:await TableCatalog.ReadColumns(true,pg,name));
+   var sSpec=new TableSpec("dbo",name,["id"],[],AutoMatch:true,Definition:await TableCatalog.ReadColumns(false,sql,name));pSpec=pSpec.WithAutomaticMetadata(sSpec);sSpec=sSpec.WithAutomaticMetadata(pSpec);
+   var before=await Engine.CapturePair(pg,sql,pSpec,sSpec);
+   foreach(var p in new[]{true,false})await Execute(p,$"UPDATE {(p?"public.":"dbo.")}{name} SET amount=CASE name WHEN 'A' THEN 20 ELSE 30 END;");
+   var after=await Engine.CapturePair(pg,sql,pSpec,sSpec,before.Pg,before.Sql);var result=Engine.Compare(before.Pg,after.Pg,before.Sql,after.Sql,pSpec);
+   Assert.AreEqual(2,result.Count);Assert.IsTrue(result.All(c=>c.Different.SequenceEqual(new[]{0,3,4})));
+   CollectionAssert.AreEqual(new[]{"[\"99\"]","[\"98\"]"},result.Select(c=>c.Sql.Key).ToArray());
+   foreach(var p in new[]{true,false})await Execute(p,$"UPDATE {(p?"public.":"dbo.")}{name} SET name='SAME',amount=40;");
+   var ambiguous=await Engine.CapturePair(pg,sql,pSpec,sSpec,before.Pg,before.Sql);
+   Assert.IsTrue(Engine.Compare(before.Pg,ambiguous.Pg,before.Sql,ambiguous.Sql,pSpec).All(c=>c.Different.Length==5));
+   foreach(var p in new[]{true,false})await Execute(p,$"DELETE FROM {(p?"public.":"dbo.")}{name};");
+   var deleted=await Engine.CapturePair(pg,sql,pSpec,sSpec);
+   Assert.IsTrue(Engine.Compare(after.Pg,deleted.Pg,after.Sql,deleted.Sql,pSpec).All(c=>c.Pg.Operation=="削除"&&c.Different.SequenceEqual(new[]{0,3,4})));
+  }finally{foreach(var p in new[]{true,false})await Execute(p,$"DROP TABLE IF EXISTS {(p?"public.":"dbo.")}{name};");}
+ }
+
  [TestMethod,TestCategory("Performance")]
  public void MeasureMillionRowBusinessComparisonIncludingValidation() {
   var report=Environment.GetEnvironmentVariable("EVIDENCE_BUSINESS_REPORT");if(report==null)Assert.Inconclusive("百万件の明示的な測定です。");
@@ -162,15 +241,19 @@ public class ComparisonSettingsTests {
    }
   }
   var pb=new Snapshot(Columns,pRows,DateTimeOffset.UnixEpoch);var sb=new Snapshot(Columns,sRows,DateTimeOffset.UnixEpoch);var pa=pb with{Rows=pNext};var sa=sb with{Rows=sNext};
-  var results=new List<object>();
+  var results=new List<object>();var automaticResults=new List<object>();
   for(var run=0;run<3;run++) {
    GC.Collect();GC.WaitForPendingFinalizers();GC.Collect();var allocated=GC.GetTotalAllocatedBytes(true);var timer=System.Diagnostics.Stopwatch.StartNew();
    var changes=Engine.Compare(pb,pa,sb,sa,Spec);timer.Stop();var bytes=GC.GetTotalAllocatedBytes(true)-allocated;
    Assert.AreEqual((count+999)/1000,changes.Count);Assert.IsTrue(changes.All(e=>e.Match));
    results.Add(new{Seconds=timer.Elapsed.TotalSeconds,AllocatedBytes=bytes});
+   allocated=GC.GetTotalAllocatedBytes(true);timer.Restart();
+   var automatic=Engine.Compare(pb,pa,sb,sa,Spec with{MatchKeys=null,ComparisonIgnored=null,AutoMatch=true});timer.Stop();bytes=GC.GetTotalAllocatedBytes(true)-allocated;
+   Assert.AreEqual((count+999)/1000,automatic.Count);Assert.IsTrue(automatic.All(e=>e.Different.SequenceEqual(new[]{0})));
+   automaticResults.Add(new{Seconds=timer.Elapsed.TotalSeconds,AllocatedBytes=bytes});
   }
   Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(report))!);
-  File.WriteAllText(report,JsonSerializer.Serialize(new{RowsPerDatabase=count,Columns=Columns.Length,ChangedRowsPerDatabase=(count+999)/1000,Measurements=results},new JsonSerializerOptions{WriteIndented=true}));
+  File.WriteAllText(report,JsonSerializer.Serialize(new{RowsPerDatabase=count,Columns=Columns.Length,ChangedRowsPerDatabase=(count+999)/1000,Measurements=results,AutomaticMeasurements=automaticResults},new JsonSerializerOptions{WriteIndented=true}));
   // 百万件を超える並列経路でも、設定エラーの理由をAggregateExceptionに隠さず返す。
   var changed=pNext["[\"0\"]"].ToArray();changed[1]="CHANGED";pNext["[\"0\"]"]=changed;
   Assert.ThrowsExactly<ComparisonConfigurationException>(()=>Engine.Compare(pb,pa,sb,sa,Spec));

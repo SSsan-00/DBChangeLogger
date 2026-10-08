@@ -8,9 +8,11 @@ using Npgsql;
 using Microsoft.Data.SqlClient;
 [assembly:System.Runtime.CompilerServices.InternalsVisibleTo("Tests")]
 namespace DbEvidence;
-public record TableSpec(string Schema, string Name, string[] Keys, string[] Ignored,TableFilter? Filter=null,string[]? Columns=null,TableFilter[]? Filters=null,string FilterJoin="AND",string[]? FilterJoins=null,TableColumn[]? Definition=null,string[]? MatchKeys=null,string[]? ComparisonIgnored=null,bool BusinessIdentity=false) {
+public record TableSpec(string Schema, string Name, string[] Keys, string[] Ignored,TableFilter? Filter=null,string[]? Columns=null,TableFilter[]? Filters=null,string FilterJoin="AND",string[]? FilterJoins=null,TableColumn[]? Definition=null,string[]? MatchKeys=null,string[]? ComparisonIgnored=null,bool BusinessIdentity=false,bool AutoMatch=false,string[]? AutoMatchExcluded=null) {
  public TableFilter[] Conditions=>Filters??(Filter is {} f?[f]:[]);
  public string JoinBefore(int index)=>FilterJoins is {} joins?joins[index-1]:FilterJoin;
+ public TableSpec WithAutomaticMetadata(TableSpec other)=>this with{AutoMatchExcluded=Keys.Concat(other.Keys)
+  .Concat((Definition??[]).Concat(other.Definition??[]).Where(c=>c.UnstableForMatching).Select(c=>c.Name)).Distinct(StringComparer.OrdinalIgnoreCase).ToArray()};
 }
 // UIに表示してよい、自前の検証理由だけを扱う。ドライバー例外やレコード値は含めない。
 public class ComparisonConfigurationException(string message):InvalidOperationException(message);
@@ -66,6 +68,8 @@ public static class Engine {
  public int GetHashCode(string?[] row){var hash=new HashCode();foreach(var i in indexes)hash.Add(row[i],StringComparer.Ordinal);return hash.ToHashCode();}
  }
  static ComparisonConfigurationException ConfigurationError(TableSpec spec,string reason)=>new($"{spec.Name}: {reason}");
+ public static string[] AutomaticMatchingExcluded(TableSpec spec)=>spec.Keys.Concat(spec.AutoMatchExcluded??[])
+  .Concat((spec.Definition??[]).Where(c=>c.UnstableForMatching).Select(c=>c.Name)).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
  static int[] ComparisonIndexes(string[] columns,TableSpec spec) {
  var match=spec.MatchKeys??[];var excluded=spec.ComparisonIgnored??[];
  if(spec.MatchKeys is {Length:0}||match.Distinct(StringComparer.OrdinalIgnoreCase).Count()!=match.Length)
@@ -190,7 +194,8 @@ public static class Engine {
  ()=>FindChanges(pb,pa,identity,pm,candidates),()=>FindChanges(sb,sa,bm,sm,sqlCandidates));
  }catch(AggregateException e) when(e.Flatten().InnerExceptions.All(error=>error is ComparisonConfigurationException)){throw e.Flatten().InnerExceptions[0];}
  }else{FindChanges(pb,pa,identity,pm,candidates);FindChanges(sb,sa,bm,sm,sqlCandidates);}
- if(!businessMatching)candidates.UnionWith(sqlCandidates);
+ var automatic=spec.AutoMatch&&!businessMatching;
+ if(!businessMatching&&!automatic)candidates.UnionWith(sqlCandidates);
  var pgAfterAligned=pm.AsSpan().SequenceEqual(identity);var sqlBeforeAligned=bm.AsSpan().SequenceEqual(identity);var sqlAfterAligned=sm.AsSpan().SequenceEqual(identity);
  string?[]? AlignRow(Snapshot snapshot,string key,int[] map,bool alignedOrder) {
  if(!snapshot.Rows.TryGetValue(key,out var row))return null;
@@ -207,7 +212,39 @@ public static class Engine {
  var diff=p.Operation!=s.Operation?judged:judged.Where(i=>p.After?[i]!=s.After?[i]).ToArray();
  result.Add(new(key,p,s,p.Operation==s.Operation&&diff.Length==0,diff));
  }
- if(businessMatching) {
+ if(automatic) {
+ // 推定は変更行だけで行う。主キー・日時の差を対応付けから外しても、最終判定では必ず比較する。
+ var excluded=AutomaticMatchingExcluded(spec).ToHashSet(StringComparer.OrdinalIgnoreCase);
+ var stable=active.Where(i=>!excluded.Contains(columns[i])&&!comparisonIgnored.Contains(columns[i])).ToArray();
+ var p=candidates.Order(StringComparer.Ordinal).Select(k=>Get(k,pb,pa,identity,pm,true,pgAfterAligned)).ToArray();
+ var s=sqlCandidates.Order(StringComparer.Ordinal).Select(k=>Get(k,sb,sa,bm,sm,sqlBeforeAligned,sqlAfterAligned)).ToArray();
+ var pUsed=new HashSet<Change>();var sUsed=new HashSet<Change>();
+ Dictionary<string,List<Change>> GroupAutomatic(Change[] changes) {
+ var groups=new Dictionary<string,List<Change>>(StringComparer.Ordinal);
+ foreach(var change in changes) {
+ cancellationToken.ThrowIfCancellationRequested();var row=change.After??change.Before!;
+ // 照合材料なし・全NULLでは根拠がない。候補重複も後段で拒否し、任意のペアを一致にしない。
+ if(stable.Length==0||stable.All(i=>row[i]==null))continue;
+ var key=change.Operation+System.Text.Json.JsonSerializer.Serialize(stable.Select(i=>row[i]).ToArray());
+ if(!groups.TryGetValue(key,out var list))groups.Add(key,list=[]);list.Add(change);
+ }return groups;
+ }
+ var pgGroups=GroupAutomatic(p);var sqlGroups=GroupAutomatic(s);
+ foreach(var (key,group) in pgGroups) {
+ cancellationToken.ThrowIfCancellationRequested();
+ if(group.Count!=1||!sqlGroups.TryGetValue(key,out var other)||other.Count!=1)continue;
+ var pg=group[0];var sql=other[0];pUsed.Add(pg);sUsed.Add(sql);
+ var pr=pg.After??pg.Before!;var sr=sql.After??sql.Before!;
+ var diff=judged.Where(i=>pr[i]!=sr[i]).ToArray();result.Add(new(pg.Key,pg,sql,diff.Length==0,diff));
+ }
+ var remainingPg=p.Where(c=>!pUsed.Contains(c)).ToArray();var remainingSql=s.Where(c=>!sUsed.Contains(c)).ToArray();
+ var missing=new Change("","変更なし",null,null,[]);
+ // 未対応行は表示用にまとめるだけで、対応したとは解釈しない。曖昧さは全対象列×として残す。
+ for(var i=0;i<Math.Max(remainingPg.Length,remainingSql.Length);i++) {
+ cancellationToken.ThrowIfCancellationRequested();var pg=i<remainingPg.Length?remainingPg[i]:missing;var sql=i<remainingSql.Length?remainingSql[i]:missing;
+ result.Add(new(pg.Operation=="変更なし"?sql.Key:pg.Key,pg,sql,false,judged));
+ }
+ }else if(businessMatching) {
  Dictionary<string,List<Change>> Group(HashSet<string> keys,Snapshot before,Snapshot after,int[] beforeMap,int[] afterMap,bool beforeAligned,bool afterAligned) {
  var groups=new Dictionary<string,List<Change>>(StringComparer.Ordinal);
  foreach(var key in keys) {
@@ -241,7 +278,7 @@ public static class Engine {
  public static (string Html,string Text,string SpreadsheetXml) Render(string[] columns,List<Evidence> evidence,TableSpec spec,Snapshot pb,Snapshot pa,Snapshot sb,Snapshot sa,bool spreadsheetOnly=false,CancellationToken cancellationToken=default) {
  var pgCount=evidence.Count(e=>e.Pg.Operation!="変更なし");var sqlCount=evidence.Count(e=>e.Sql.Operation!="変更なし");
  var dataRows=evidence.Count==0?0:(long)Math.Max(1,pgCount)+Math.Max(1,sqlCount);
- if(dataRows+3+(spec.Ignored.Length>0?1:0)+(spec.Columns is {Length:>0}?1:0)+(spec.MatchKeys is {Length:>0}?1:0)+(spec.ComparisonIgnored is {Length:>0}?1:0)>1048576||columns.Length+2>16384)throw new InvalidOperationException(ExcelLimitError);
+ if(dataRows+3+(spec.Ignored.Length>0?1:0)+(spec.Columns is {Length:>0}?1:0)+(spec.MatchKeys is {Length:>0}?1:0)+(spec.ComparisonIgnored is {Length:>0}?1:0)+(spec.AutoMatch&&spec.MatchKeys==null?1:0)>1048576||columns.Length+2>16384)throw new InvalidOperationException(ExcelLimitError);
  // Excelの推測による日付・数値・数式への変換を防ぐため、DataのString型と書式@を両方維持する。
  // ここに追加した上部の行は、直前のExcel行数上限チェックにも反映する。
  XNamespace ss="urn:schemas-microsoft-com:office:spreadsheet";
@@ -271,6 +308,7 @@ public static class Engine {
  Row(new[]{($"対象: {spec.Name}"+condition,"#ffffff")});
  if(spec.Columns is {Length:>0})Row(new[]{("取得列: "+string.Join(", ",columns),"#ffffff")});
  if(spec.Ignored.Length>0)Row(new[]{("除外列: "+string.Join(", ",spec.Ignored),"#ffffff")});
+ if(spec.AutoMatch&&spec.MatchKeys==null)Row(new[]{("DB間の自動対応: 同じ操作の変更行を値で照合 / 照合材料から除外: "+string.Join(", ",AutomaticMatchingExcluded(spec).Where(n=>columns.Contains(n,StringComparer.OrdinalIgnoreCase)))+"（値の判定は対象） / 未対応・曖昧な行は×","#ffffff")});
  if(spec.MatchKeys is {Length:>0})Row(new[]{("DB間の対応列: "+string.Join(", ",spec.MatchKeys)+(spec.BusinessIdentity?"（操作前後の識別にも使用）":""),"#ffffff")});
  if(spec.ComparisonIgnored is {Length:>0})Row(new[]{("DB間判定の除外列: "+string.Join(", ",spec.ComparisonIgnored),"#ffffff")});
  Row(new[]{"DB","操作"}.Concat(columns).Select(c=>(c,"#d9e2f3")));

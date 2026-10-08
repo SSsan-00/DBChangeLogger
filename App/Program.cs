@@ -25,7 +25,7 @@ class MainForm:Form {
  readonly TextBox selectedColumns=new(){Width=620,ReadOnly=true};
  readonly Button comparison=new(){Text="比較設定",AutoSize=true};
  readonly Label comparisonSummary=new(){Width=610,Height=27,TextAlign=ContentAlignment.MiddleLeft};
- string[]? matchKeys;string[] comparisonIgnored=[];string comparisonTable="";
+ string[]? matchKeys;string[] comparisonIgnored=[];string comparisonTable="";bool autoMatch=true;
  readonly FlowLayoutPanel filterRows=new(){Width=880,FlowDirection=FlowDirection.TopDown,WrapContents=false,AutoScroll=true};
  readonly FlowLayoutPanel panel=new(){Dock=DockStyle.Top,AutoSize=true,FlowDirection=FlowDirection.TopDown,WrapContents=false,Padding=new Padding(6)};
  readonly Button addFilter=new(){Text="＋ 条件を追加",AutoSize=true};
@@ -95,8 +95,8 @@ class MainForm:Form {
  async Task SaveSession() {
  if(demo)return;
  var finalStatus=status.Text;
- var state=new SavedSession(3,ConnectionId,selectedTable,selectedColumns.Text,ignore.Text,filterRows.Controls.OfType<FilterRow>().Select(r=>r.Saved).ToArray(),
-  null,null,null,null,spreadsheetXml,results,rowCounts.Text,finalStatus,"",targets.ToArray(),matchKeys,comparisonIgnored);
+ var state=new SavedSession(4,ConnectionId,selectedTable,selectedColumns.Text,ignore.Text,filterRows.Controls.OfType<FilterRow>().Select(r=>r.Saved).ToArray(),
+  null,null,null,null,spreadsheetXml,results,rowCounts.Text,finalStatus,"",targets.ToArray(),matchKeys,comparisonIgnored,autoMatch);
  stateBusy=true;Enabled=false;status.Text="前回の内容を暗号化して保存中…";
  try{await Task.Run(()=>SessionStore.Save(SessionStore.DefaultPath,state));status.Text=finalStatus;}
  finally{stateBusy=false;Enabled=true;}
@@ -107,9 +107,12 @@ class MainForm:Form {
  try {
  var restored=await Task.Run(()=>SessionStore.Load(SessionStore.DefaultPath));selectedTable=restored.Table;selectedColumns.Text=restored.Columns;ignore.Text=restored.Ignored;
  matchKeys=restored.MatchKeys;comparisonIgnored=restored.ComparisonIgnored??[];comparisonTable=selectedTable;
+ autoMatch=restored.Version>=4?restored.AutoMatch:restored.MatchKeys==null;
  filterRows.Controls.Clear();foreach(var filter in restored.Filters){AddFilterRow();((FilterRow)filterRows.Controls[^1]).Restore(filter);}if(filterRows.Controls.Count==0)AddFilterRow();ResizeFilterRows();status.Text=restored.Status+"（前回の入力を復元）";
  // 旧単一テーブルの保存データも、追跡対象1件として引き継ぐ。
  var savedTargets=restored.Targets??(restored.PgSpec!=null&&restored.SqlSpec!=null?[new TrackedTable(restored.PgSpec,restored.SqlSpec,restored.PgBefore,restored.SqlBefore,restored.Counts)]:[]);
+ // 保存済みの取得・結果は従来の判定を保つ。旧版で未取得の標準設定だけ自動対応へ移す。
+ if(restored.Version<4)savedTargets=savedTargets.Select(t=>t.PgBefore==null&&t.PgSpec.MatchKeys==null?t with{PgSpec=t.PgSpec with{AutoMatch=true},SqlSpec=t.SqlSpec with{AutoMatch=true}}:t).ToArray();
  targets.AddRange(savedTargets.Select(t=>restored.ConnectionId==ConnectionId?t:t with{PgBefore=null,SqlBefore=null,Counts=""}));RefreshTargets();
  if(restored.ConnectionId==ConnectionId){spreadsheetXml=restored.SpreadsheetXml;results=restored.Results;rowCounts.Text=restored.Counts;}
  if(HasBaseline)foreach(var c in settings)c.Enabled=false;
@@ -134,7 +137,8 @@ class MainForm:Form {
  throw new ComparisonConfigurationException(selected.Postgres.Name+": 比較設定に存在しない共通列があります。「比較設定」を見直してください。");
  // 両DBの識別列を取得に含める。対応列はCreateSelectCommandも自動追加する。
  if(columns.Length>0)columns=columns.Concat(p.Keys).Concat(s.Keys).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
- return new(p with{Columns=columns,Filters=filters,FilterJoins=joins,Definition=pgColumns},s with{Columns=columns,Filters=filters,FilterJoins=joins,Definition=sqlColumns});
+ p=p with{Columns=columns,Filters=filters,FilterJoins=joins,Definition=pgColumns,AutoMatch=autoMatch};s=s with{Columns=columns,Filters=filters,FilterJoins=joins,Definition=sqlColumns,AutoMatch=autoMatch};
+ return new(p.WithAutomaticMetadata(s),s.WithAutomaticMetadata(p));
  }
  void ShowTarget(TrackedTable target){
  filteringTables=true;table.BeginUpdate();table.Items.Clear();table.Items.AddRange(allTables);
@@ -143,6 +147,7 @@ class MainForm:Form {
  pgColumns=target.PgSpec.Definition??[];sqlColumns=target.SqlSpec.Definition??[];availableColumns=TableCatalog.CommonColumns(pgColumns,sqlColumns);
  selectedColumns.Text=string.Join(", ",target.PgSpec.Columns??[]);ignore.Text=string.Join(", ",target.PgSpec.Ignored);
  matchKeys=target.PgSpec.MatchKeys;comparisonIgnored=target.PgSpec.ComparisonIgnored??[];comparisonTable=target.PgSpec.Name;
+ autoMatch=target.PgSpec.AutoMatch;
  filterRows.Controls.Clear();var conditions=target.PgSpec.Conditions;
  for(var i=0;i<conditions.Length;i++){AddFilterRow();var row=(FilterRow)filterRows.Controls[^1];row.Restore(new(conditions[i],i==0?"AND":target.PgSpec.JoinBefore(i)));row.BindColumns(SearchColumns());}
  if(conditions.Length==0)AddFilterRow();ResizeFilterRows();if(target.Counts.Length>0)rowCounts.Text=target.PgSpec.Name+" / "+target.Counts;
@@ -155,6 +160,7 @@ class MainForm:Form {
  foreach(var target in targets){
  var p=target.PgSpec with{Definition=await TableCatalog.ReadColumns(true,pgConnection,target.PgSpec.Name,token)};
  var s=target.SqlSpec with{Definition=await TableCatalog.ReadColumns(false,sqlConnection,target.SqlSpec.Name,token)};
+ p=p.WithAutomaticMetadata(s);s=s.WithAutomaticMetadata(p);
  var counts=await CheckCounts(p,s,token);var (pb,sb)=await CaptureWithProgress(p,s,null,null,"操作前",counts,token);
  captured.Add(new(p,s,pb,sb,$"PG 前 {pb.Rows.Count:N0}件 / SQL Server 前 {sb.Rows.Count:N0}件"));
  }
@@ -190,7 +196,7 @@ class MainForm:Form {
  if(selected!=null)selectedTable=selected.Postgres.Name;
  before.Enabled=execution==null&&!string.IsNullOrEmpty(pgConnection)&&(targets.Count>0||selected!=null&&(selected.KeyError==null||matchKeys is {Length:>0})&&availableColumns.Length>0);
  comparison.Enabled=execution==null&&!HasBaseline&&selected!=null&&availableColumns.Length>0;
- comparisonSummary.Text=$"対応: {(matchKeys==null?"主キー":string.Join(", ",matchKeys))} / 判定除外: {(comparisonIgnored.Length==0?"なし":string.Join(", ",comparisonIgnored))}";
+ comparisonSummary.Text=$"対応: {(autoMatch&&matchKeys==null?"自動（主キー・日時以外の値）":matchKeys==null?"主キー":string.Join(", ",matchKeys))} / 判定除外: {(comparisonIgnored.Length==0?"なし":string.Join(", ",comparisonIgnored))}";
  if(matchKeys==null&&selected?.KeyError is {} error)status.Text=error;
  else if(selected!=null&&!HasBaseline)status.Text="テーブルを選択しました。必要なら検索列と条件を指定し、操作前を取得してください。";
   if(!HasBaseline)rowCounts.Text="取得対象件数: 未確認";
@@ -211,8 +217,8 @@ class MainForm:Form {
  }
  void ChooseComparison() {
  if(table.SelectedItem is not CommonTable selected||availableColumns.Length==0)return;
- var chosen=ComparisonDialog.Choose(this,selected,availableColumns.Select(c=>c.Name).ToArray(),matchKeys,comparisonIgnored,ignore.Text.Split(',',StringSplitOptions.TrimEntries|StringSplitOptions.RemoveEmptyEntries));
- if(chosen is {} value){matchKeys=value.Keys;comparisonIgnored=value.Ignored;comparisonTable=selected.Postgres.Name;UpdateTableSelection();}
+ var chosen=ComparisonDialog.Choose(this,selected,availableColumns.Select(c=>c.Name).ToArray(),matchKeys,comparisonIgnored,ignore.Text.Split(',',StringSplitOptions.TrimEntries|StringSplitOptions.RemoveEmptyEntries),autoMatch);
+ if(chosen is {} value){matchKeys=value.Keys;comparisonIgnored=value.Ignored;autoMatch=value.Automatic;comparisonTable=selected.Postgres.Name;UpdateTableSelection();}
  }
  async Task LoadColumnDefinitions() {
  if(demo||stateBusy||execution!=null||string.IsNullOrEmpty(pgConnection))return;
@@ -220,6 +226,7 @@ class MainForm:Form {
  if(comparisonTable!=selected.Postgres.Name) {
  var saved=targets.FirstOrDefault(t=>t.PgSpec.Name==selected.Postgres.Name);
  matchKeys=saved?.PgSpec.MatchKeys;comparisonIgnored=saved?.PgSpec.ComparisonIgnored??[];comparisonTable=selected.Postgres.Name;
+ autoMatch=saved?.PgSpec.AutoMatch??true;
  }
  pgColumns=sqlColumns=availableColumns=[];
  await Execute(async()=>{
@@ -344,24 +351,25 @@ class SearchColumnCombo:ComboBox {
 
 // 候補はDB定義から渡す。フィルターで一時的に隠れたチェックも保持し、検索のたびに選択を失わない。
 static class ComparisonDialog {
- public static (string[]? Keys,string[] Ignored)? Choose(IWin32Window owner,CommonTable table,string[] names,string[]? keys,string[] ignored,string[] changeIgnored) {
- using var dialog=new Form(){Text=table.Postgres.Name+" の比較設定",ClientSize=new Size(760,230),FormBorderStyle=FormBorderStyle.FixedDialog,StartPosition=FormStartPosition.CenterParent,MinimizeBox=false,MaximizeBox=false};
+ public static (string[]? Keys,string[] Ignored,bool Automatic)? Choose(IWin32Window owner,CommonTable table,string[] names,string[]? keys,string[] ignored,string[] changeIgnored,bool automatic) {
+ using var dialog=new Form(){Text=table.Postgres.Name+" の比較設定",ClientSize=new Size(760,270),FormBorderStyle=FormBorderStyle.FixedDialog,StartPosition=FormStartPosition.CenterParent,MinimizeBox=false,MaximizeBox=false};
  var panel=new FlowLayoutPanel(){Dock=DockStyle.Fill,FlowDirection=FlowDirection.TopDown,WrapContents=false,Padding=new Padding(12)};
- var usePrimary=new CheckBox(){Text="主キーでDB間の行を対応付ける",AutoSize=true,Checked=keys==null&&table.KeyError==null,Enabled=table.KeyError==null};
+ var usePrimary=new CheckBox(){Text="主キーでDB間の行を対応付ける",AutoSize=true,Checked=!automatic&&keys==null&&table.KeyError==null,Enabled=table.KeyError==null};
+ var useAutomatic=new CheckBox(){Text="主キー・日時以外の値で自動対応（値の違いは×）",AutoSize=true,Checked=automatic&&keys==null,Enabled=table.KeyError==null};
  var matching=keys??[];var excluded=ignored.ToArray();
  var keyText=new TextBox(){Width=450,ReadOnly=true,AccessibleName="DB間の対応列"};var ignoredText=new TextBox(){Width=450,ReadOnly=true,AccessibleName="DB間判定の除外列"};
  var pickKeys=new Button(){Text="列を選択",AutoSize=true};var pickIgnored=new Button(){Text="列を選択",AutoSize=true};
  void Field(string text,TextBox input,Button button){var row=new FlowLayoutPanel(){Width=730,Height=32};row.Controls.AddRange(new Control[]{new Label(){Text=text,Width=175,Height=27,TextAlign=ContentAlignment.MiddleLeft},input,button});panel.Controls.Add(row);}
- void Refresh(){keyText.Text=string.Join(", ",usePrimary.Checked?table.Postgres.Keys:matching);ignoredText.Text=string.Join(", ",excluded);pickKeys.Enabled=!usePrimary.Checked;}
+ void Refresh(){keyText.Text=useAutomatic.Checked?"自動":string.Join(", ",usePrimary.Checked?table.Postgres.Keys:matching);ignoredText.Text=string.Join(", ",excluded);pickKeys.Enabled=!usePrimary.Checked&&!useAutomatic.Checked;usePrimary.Enabled=table.KeyError==null&&!useAutomatic.Checked;}
  pickKeys.Click+=(_,_)=>{var chosen=ElementPicker.Choose(dialog,"DB間の対応列を選択",names.Where(n=>!changeIgnored.Contains(n,StringComparer.OrdinalIgnoreCase)).ToArray(),matching);if(chosen!=null){matching=chosen;Refresh();}};
  pickIgnored.Click+=(_,_)=>{var chosen=ElementPicker.Choose(dialog,"DB間判定の除外列を選択",names,excluded);if(chosen!=null){excluded=chosen;Refresh();}};
- usePrimary.CheckedChanged+=(_,_)=>Refresh();panel.Controls.Add(usePrimary);Field("DB間の対応列",keyText,pickKeys);Field("DB間判定の除外列",ignoredText,pickIgnored);
+ usePrimary.CheckedChanged+=(_,_)=>Refresh();useAutomatic.CheckedChanged+=(_,_)=>Refresh();panel.Controls.Add(useAutomatic);panel.Controls.Add(usePrimary);Field("DB間の対応列",keyText,pickKeys);Field("DB間判定の除外列",ignoredText,pickIgnored);
  panel.Controls.Add(new Label(){Text="対応列は、両DBで同じ行を表す一意な値を選びます。複数列も指定できます。\n主キーがないDBでは操作前後の識別にも使います。採番IDは判定除外へ指定できます。",AutoSize=true,MaximumSize=new Size(725,0)});
  var message=new Label(){AutoSize=true,MaximumSize=new Size(725,0)};panel.Controls.Add(message);
  var buttons=new FlowLayoutPanel(){Dock=DockStyle.Bottom,Height=38,FlowDirection=FlowDirection.RightToLeft};var cancel=new Button(){Text="キャンセル",AutoSize=true,DialogResult=DialogResult.Cancel};var ok=new Button(){Text="決定",AutoSize=true};
- ok.Click+=(_,_)=>{try{table.Specs(changeIgnored,null,usePrimary.Checked?null:matching,excluded);dialog.DialogResult=DialogResult.OK;}catch(ComparisonConfigurationException e){message.Text=e.Message;}};
+ ok.Click+=(_,_)=>{try{table.Specs(changeIgnored,null,useAutomatic.Checked||usePrimary.Checked?null:matching,excluded);dialog.DialogResult=DialogResult.OK;}catch(ComparisonConfigurationException e){message.Text=e.Message;}};
  buttons.Controls.AddRange(new Control[]{cancel,ok});dialog.Controls.Add(panel);dialog.Controls.Add(buttons);dialog.AcceptButton=ok;dialog.CancelButton=cancel;Refresh();
- return dialog.ShowDialog(owner)==DialogResult.OK?(usePrimary.Checked?null:matching,excluded):null;
+ return dialog.ShowDialog(owner)==DialogResult.OK?(useAutomatic.Checked||usePrimary.Checked?null:matching,excluded,useAutomatic.Checked):null;
  }
 }
 static class ElementPicker {

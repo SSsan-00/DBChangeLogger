@@ -5,6 +5,8 @@ using System.Globalization;
 namespace DbEvidence;
 
 public record TableColumn(string Name,string ValueType,string DatabaseType) {
+ // SQL Serverのtimestampは日時ではなくrowversion。どちらも行の対応付けには使わず、値の判定には残す。
+ public bool UnstableForMatching=>ValueType is "DateTime" or "DateTimeOffset" or "DateOnly" or "TimeOnly" or "TimeSpan"||DatabaseType is "timestamp" or "rowversion";
  public bool Numeric=>ValueType is "Byte" or "Int16" or "Int32" or "Int64" or "UInt32" or "Decimal" or "Double" or "Single";
  public bool Searchable=>Numeric||ValueType is "String" or "Boolean" or "DateTime" or "DateTimeOffset" or "Guid" or "TimeSpan";
  // 表示上の文字列／数値にかかわらずDBの型へ変換する。文字列列の先頭ゼロは数値化してはいけない。
