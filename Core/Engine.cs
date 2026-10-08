@@ -95,13 +95,16 @@ public static class Engine {
    if(best==null||candidate.Count>best.Count){best=candidate;bestIndex=index;tied=false;}
    else if(candidate.Count==best.Count&&!candidate.All(pair=>best.TryGetValue(pair.Key,out var other)&&other.Key==pair.Value.Key))tied=true;
   }
-  // 同点で異なる対応がある場合は推定しない。複合キーを総当たりで探索しないため、単一列で決まらない変更は削除＋追加として残す。
+  // 同点で異なる対応がある場合は、更新前の行を特定したとは扱わない。
   if(tied){best=null;bestIndex=-1;}
   var changes=new List<Change>();var used=new HashSet<string>(StringComparer.Ordinal);
   foreach(var (key,row) in removed)if(best!=null&&best.TryGetValue(key,out var next)){token.ThrowIfCancellationRequested();used.Add(next.Key);changes.Add(new(key,"更新",row,next.Row,active.Where(i=>row[i]!=next.Row[i]).ToArray()));}
-  var uncertain=removed.Count>(best?.Count??0)&&added.Count>used.Count;
-  foreach(var (key,row) in removed){token.ThrowIfCancellationRequested();if(best==null||!best.ContainsKey(key))changes.Add(new("before:"+key,"削除",row,null,active,uncertain));}
-  foreach(var (key,row) in added){token.ThrowIfCancellationRequested();if(!used.Contains(key))changes.Add(new("after:"+key,"追加",null,row,active,uncertain));}
+  var remainingBefore=removed.Where(r=>best==null||!best.ContainsKey(r.Key)).ToArray();
+  var remainingAfter=added.Where(r=>!used.Contains(r.Key)).ToArray();var updates=Math.Min(remainingBefore.Length,remainingAfter.Length);
+  // ponytail: 主キーなしでは更新と削除＋再追加を区別できない。件数の重なる分は更新表示とし、履歴が必要ならDB側の変更記録を使う。
+  // 不明な更新前の値は割り当てない。更新後の行だけを出力し、全対象セルを黄色・判定を×にする。
+  for(var i=0;i<remainingAfter.Length;i++){token.ThrowIfCancellationRequested();var (key,row)=remainingAfter[i];changes.Add(new("after:"+key,i<updates?"更新":"追加",null,row,active,updates>0));}
+  foreach(var (key,row) in remainingBefore.Skip(updates)){token.ThrowIfCancellationRequested();changes.Add(new("before:"+key,"削除",row,null,active,updates>0));}
   return(changes.ToArray(),bestIndex<0?null:before.Columns[beforeMap[bestIndex]]);
  }
  static int[] ComparisonIndexes(string[] columns,TableSpec spec) {

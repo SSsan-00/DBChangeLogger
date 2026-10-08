@@ -51,15 +51,23 @@ public class ComparisonSettingsTests {
  }
 
  [TestMethod]
- public void KeylessAmbiguousUpdatesRemainDeletesAndAddsAndRejectAllColumns() {
+ public void KeylessAmbiguousUpdatesShowOnlyFinalRowsAndRejectAllColumns() {
   var columns=new[]{"id","name","amount"};var spec=new TableSpec("public","heap",[],[],AutoMatch:true,Definition:[new("id","Int32","integer"),new("name","String","text"),new("amount","Int32","integer")]);
   var pb=Heap(columns,["1","A","10"],["2","B","10"]);var pa=Heap(columns,["1","B","20"],["2","A","20"]);
-  var result=Engine.Compare(pb,pa,pb,pa,spec);Assert.AreEqual(4,result.Count);Assert.IsTrue(result.All(c=>!c.Match&&c.Different.Length==3));
-  CollectionAssert.AreEquivalent(new[]{"削除","削除","追加","追加"},result.Select(c=>c.Pg.Operation).ToArray());
+  var result=Engine.Compare(pb,pa,pb,pa,spec);Assert.AreEqual(2,result.Count);Assert.IsTrue(result.All(c=>!c.Match&&c.Different.Length==3));
+  Assert.IsTrue(result.All(c=>c.Pg.Operation=="更新"&&c.Sql.Operation=="更新"&&c.Pg.Before==null&&c.Pg.Uncertain));
+  CollectionAssert.AreEqual(pa.Rows.Values.Select(r=>string.Join("/",r)).ToArray(),result.Select(c=>string.Join("/",c.Pg.After!)).ToArray());
   var duplicate=Heap(columns,[null,"A","10"],[null,"A","10"]);var updated=Heap(columns,[null,"A","20"],[null,"A","20"]);
-  Assert.AreEqual(4,Engine.Compare(duplicate,updated,duplicate,updated,spec).Count);
+  Assert.AreEqual(2,Engine.Compare(duplicate,updated,duplicate,updated,spec).Count);
   Assert.IsTrue(Engine.Compare(duplicate,updated,duplicate,updated,spec).All(c=>!c.Match));
   Assert.IsTrue(Values(Render(pb,pa,pb,pa,spec)[^1]).Skip(2).All(v=>v=="×"));
+  var rows=Render(pb,pa,pb,pa,spec);Assert.AreEqual(8,rows.Length);
+  Assert.IsTrue(rows.Skip(3).Take(4).All(r=>Values(r)[1]=="更新"&&r.Elements(Ss+"Cell").Skip(2).All(c=>(string?)c.Attribute(Ss+"StyleID")=="Cfff2cc")));
+  var more=Heap(columns,[null,"A","20"],[null,"A","20"],[null,"A","20"]);
+  CollectionAssert.AreEquivalent(new[]{"更新","更新","追加"},Engine.Compare(duplicate,more,duplicate,more,spec).Select(c=>c.Pg.Operation).ToArray());
+  CollectionAssert.AreEquivalent(new[]{"更新","更新","削除"},Engine.Compare(more,duplicate,more,duplicate,spec).Select(c=>c.Pg.Operation).ToArray());
+  var allChanged=Heap(columns,["8","X","30"],["9","Y","40"]);
+  Assert.IsTrue(Engine.Compare(pb,allChanged,pb,allChanged,spec).All(c=>c.Pg.Operation=="更新"&&!c.Match));
  }
 
  [TestMethod]
