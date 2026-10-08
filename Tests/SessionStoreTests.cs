@@ -11,8 +11,8 @@ public class SessionStoreTests {
   if(!OperatingSystem.IsWindows()){Assert.Inconclusive("Windows DPAPIの検証です。");return;}
   var d=DemoEvidence.Create();var path=Path.Combine(Path.GetTempPath(),Guid.NewGuid()+".bin");
   var spec=d.Spec with{Definition=[new("id","Int32","integer"),new("name","String","text")]};
-  var other=spec with{Name="orders",Filters=[new("id",">=","100","数値")],Columns=["id","amount"],Ignored=[]};
-  var state=new SavedSession(2,"hash",d.Spec.Name,"name,amount","stamp",[new(new("name","=","  tester  "),"OR")],spec,spec,d.PgBefore,d.SqlBefore,"<xml>00123=1+1</xml>",[new("1","更新","変更なし","amount","不一致",spec.Name)],"7件","結果","demo",[new(spec,spec,d.PgBefore,d.SqlBefore,"7件"),new(other,other,d.PgBefore,d.SqlBefore,"2件")]);
+  var other=spec with{Name="orders",Filters=[new("id",">=","100","数値")],Columns=["id","amount"],Ignored=[],MatchKeys=["name"],ComparisonIgnored=["id"],BusinessIdentity=true};
+  var state=new SavedSession(3,"hash",d.Spec.Name,"name,amount","stamp",[new(new("name","=","  tester  "),"OR")],spec,spec,d.PgBefore,d.SqlBefore,"<xml>00123=1+1</xml>",[new("1","更新","変更なし","amount","不一致",spec.Name)],"7件","結果","demo",[new(spec,spec,d.PgBefore,d.SqlBefore,"7件"),new(other,other,d.PgBefore,d.SqlBefore,"2件")],["name"],["id"]);
   try {
    SessionStore.Save(path,state);var restored=SessionStore.Load(path);
    Assert.AreEqual(state.SpreadsheetXml,restored.SpreadsheetXml);Assert.AreEqual(state.Filters[0],restored.Filters[0]);
@@ -22,8 +22,11 @@ public class SessionStoreTests {
    Assert.AreEqual("demo",restored.TableSearch);CollectionAssert.AreEqual(spec.Definition!,restored.PgSpec!.Definition!);
    Assert.AreEqual(2,restored.Targets!.Length);Assert.AreEqual("orders",restored.Targets[1].PgSpec.Name);
    CollectionAssert.AreEqual(other.Conditions,restored.Targets[1].PgSpec.Conditions);CollectionAssert.AreEqual(other.Columns!,restored.Targets[1].PgSpec.Columns!);
+   CollectionAssert.AreEqual(state.MatchKeys!,restored.MatchKeys!);CollectionAssert.AreEqual(state.ComparisonIgnored!,restored.ComparisonIgnored!);
+   CollectionAssert.AreEqual(other.MatchKeys!,restored.Targets[1].PgSpec.MatchKeys!);CollectionAssert.AreEqual(other.ComparisonIgnored!,restored.Targets[1].PgSpec.ComparisonIgnored!);Assert.IsTrue(restored.Targets[1].PgSpec.BusinessIdentity);
    CollectionAssert.AreEqual(d.PgBefore.Rows["[\"1\"]"],restored.Targets[1].PgBefore!.Rows["[\"1\"]"]);
    SessionStore.Save(path,state with{Version=1,Targets=null});Assert.IsNull(SessionStore.Load(path).Targets);
+   SessionStore.Save(path,state with{Version=2,MatchKeys=null,ComparisonIgnored=null});Assert.IsNull(SessionStore.Load(path).MatchKeys);
    SessionStore.Save(path,state);
    var bytes=File.ReadAllBytes(path);bytes[^40]^=1;File.WriteAllBytes(path,bytes);
    Assert.ThrowsExactly<CryptographicException>(()=>SessionStore.Load(path));

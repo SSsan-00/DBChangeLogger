@@ -19,7 +19,10 @@ Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'README.md') -Destination $outpu
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'INSTALL.md') -Destination $output
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'WINDOWS-VERIFICATION.md') -Destination $output
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'BENCHMARK-100M.md') -Destination $output
-$windowsFiles = @('DBChangeLogger.exe', 'Microsoft.Data.SqlClient.SNI.dll', 'README.md', 'INSTALL.md', 'WINDOWS-VERIFICATION.md', 'BENCHMARK-100M.md') | ForEach-Object { Join-Path $output $_ }
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'BENCHMARK-TUNING.md') -Destination $output
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'BENCHMARK-CAPTURE.md') -Destination $output
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'COMPARISON-KEYS.md') -Destination $output
+$windowsFiles = @('DBChangeLogger.exe', 'Microsoft.Data.SqlClient.SNI.dll', 'README.md', 'INSTALL.md', 'WINDOWS-VERIFICATION.md', 'BENCHMARK-100M.md', 'BENCHMARK-TUNING.md', 'BENCHMARK-CAPTURE.md', 'COMPARISON-KEYS.md') | ForEach-Object { Join-Path $output $_ }
 if (-not $DemoOnly) { $windowsFiles += $encrypted }
 Compress-Archive -LiteralPath $windowsFiles -DestinationPath (Join-Path $PSScriptRoot 'artifacts\DBChangeLogger-Windows-x64.zip') -Force
 
@@ -28,8 +31,8 @@ $sourceFiles = @(
     'App\App.csproj', 'App\Program.cs',
     'Core\Core.csproj', 'Core\Engine.cs', 'Core\DemoEvidence.cs', 'Core\ConnectionSettings.cs', 'Core\TableCatalog.cs', 'Core\SessionStore.cs',
     'Configure\Configure.csproj', 'Configure\Program.cs', 'Configure\PrivateConnections.example.txt',
-    'Tests\Tests.csproj', 'Tests\DatabaseIntegrationTests.cs', 'Tests\EvidenceTests.cs', 'Tests\ExcelArtifactTests.cs', 'Tests\ConnectionSettingsTests.cs', 'Tests\ConfigureTests.cs', 'Tests\LargeTableTests.cs', 'Tests\TableCatalogTests.cs', 'Tests\SessionStoreTests.cs',
-    'README.md', 'INSTALL.md', 'WINDOWS-VERIFICATION.md', 'BENCHMARK-100M.md', 'test-databases.sh', 'Publish.ps1', 'global.json', '.gitignore'
+    'Tests\Tests.csproj', 'Tests\DatabaseIntegrationTests.cs', 'Tests\EvidenceTests.cs', 'Tests\ExcelArtifactTests.cs', 'Tests\ConnectionSettingsTests.cs', 'Tests\ConfigureTests.cs', 'Tests\LargeTableTests.cs', 'Tests\TableCatalogTests.cs', 'Tests\SessionStoreTests.cs', 'Tests\CapturePerformanceTests.cs', 'Tests\ComparisonSettingsTests.cs',
+    'README.md', 'INSTALL.md', 'WINDOWS-VERIFICATION.md', 'BENCHMARK-100M.md', 'BENCHMARK-TUNING.md', 'BENCHMARK-CAPTURE.md', 'COMPARISON-KEYS.md', 'test-databases.sh', 'Publish.ps1', 'global.json', '.gitignore'
 )
 Add-Type -AssemblyName System.IO.Compression
 $archivePath = Join-Path $PSScriptRoot 'artifacts\DBChangeLogger-Source.zip'

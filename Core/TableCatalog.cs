@@ -22,14 +22,26 @@ public record DatabaseTable(string Name, string[] Keys);
 public record CommonTable(DatabaseTable Postgres, DatabaseTable SqlServer) {
  public override string ToString()=>Postgres.Name;
  public string? KeyError=>Postgres.Keys.Length==0||SqlServer.Keys.Length==0
-  ? "主キーがないため比較できません。DBに主キーを定義してください。"
+  ? "主キーがありません。「比較設定」で一意なDB間の対応列を選択してください。"
   : Postgres.Keys.Length!=SqlServer.Keys.Length||!Postgres.Keys.ToHashSet(StringComparer.OrdinalIgnoreCase).SetEquals(SqlServer.Keys)
    ? "両DBの主キー列が異なるため比較できません。主キーの定義を確認してください。" : null;
- public (TableSpec Pg,TableSpec Sql) Specs(string[] ignored,TableFilter? filter) {
-  if(KeyError is {} error)throw new InvalidOperationException(error);
+ public (TableSpec Pg,TableSpec Sql) Specs(string[] ignored,TableFilter? filter,string[]? matchKeys=null,string[]? comparisonIgnored=null) {
+  if(matchKeys is {Length:0}||matchKeys?.Distinct(StringComparer.OrdinalIgnoreCase).Count()!=matchKeys?.Length)
+   throw new ComparisonConfigurationException(Postgres.Name+": DB間の対応列を選択してください。");
+  if(matchKeys==null&&KeyError is {} error)throw new ComparisonConfigurationException(Postgres.Name+": "+error);
+  if(matchKeys!=null) {
+   var pKeys=Postgres.Keys.Length==0?matchKeys:Postgres.Keys;
+   var sKeys=SqlServer.Keys.Length==0?matchKeys:SqlServer.Keys;
+   if(pKeys.Length==sKeys.Length&&pKeys.ToHashSet(StringComparer.OrdinalIgnoreCase).SetEquals(sKeys))
+    sKeys=pKeys.Select(k=>sKeys.Single(s=>string.Equals(k,s,StringComparison.OrdinalIgnoreCase))).ToArray();
+   if(pKeys.Concat(sKeys).Concat(matchKeys).Intersect(ignored,StringComparer.OrdinalIgnoreCase).Any())
+    throw new ComparisonConfigurationException(Postgres.Name+": 前後の識別列・DB間の対応列は変更検出から除外できません。");
+   return(new("public",Postgres.Name,pKeys,ignored,filter,MatchKeys:matchKeys,ComparisonIgnored:comparisonIgnored,BusinessIdentity:Postgres.Keys.Length==0),
+    new("dbo",SqlServer.Name,sKeys,ignored,filter,MatchKeys:matchKeys,ComparisonIgnored:comparisonIgnored,BusinessIdentity:SqlServer.Keys.Length==0));
+  }
   // 両DBの主キー定義順が違っても同じJSONキーになるよう、SQL Server側もPG側の列順へそろえる。
-  return (new("public",Postgres.Name,Postgres.Keys,ignored,filter),
-   new("dbo",SqlServer.Name,Postgres.Keys.Select(k=>SqlServer.Keys.Single(s=>string.Equals(k,s,StringComparison.OrdinalIgnoreCase))).ToArray(),ignored,filter));
+  return (new("public",Postgres.Name,Postgres.Keys,ignored,filter,ComparisonIgnored:comparisonIgnored),
+   new("dbo",SqlServer.Name,Postgres.Keys.Select(k=>SqlServer.Keys.Single(s=>string.Equals(k,s,StringComparison.OrdinalIgnoreCase))).ToArray(),ignored,filter,ComparisonIgnored:comparisonIgnored));
  }
 }
 public static class TableCatalog {

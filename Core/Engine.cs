@@ -6,11 +6,14 @@ using System.Xml.Linq;
 using System.Xml;
 using Npgsql;
 using Microsoft.Data.SqlClient;
+[assembly:System.Runtime.CompilerServices.InternalsVisibleTo("Tests")]
 namespace DbEvidence;
-public record TableSpec(string Schema, string Name, string[] Keys, string[] Ignored,TableFilter? Filter=null,string[]? Columns=null,TableFilter[]? Filters=null,string FilterJoin="AND",string[]? FilterJoins=null,TableColumn[]? Definition=null) {
+public record TableSpec(string Schema, string Name, string[] Keys, string[] Ignored,TableFilter? Filter=null,string[]? Columns=null,TableFilter[]? Filters=null,string FilterJoin="AND",string[]? FilterJoins=null,TableColumn[]? Definition=null,string[]? MatchKeys=null,string[]? ComparisonIgnored=null,bool BusinessIdentity=false) {
  public TableFilter[] Conditions=>Filters??(Filter is {} f?[f]:[]);
  public string JoinBefore(int index)=>FilterJoins is {} joins?joins[index-1]:FilterJoin;
 }
+// UIに表示してよい、自前の検証理由だけを扱う。ドライバー例外やレコード値は含めない。
+public class ComparisonConfigurationException(string message):InvalidOperationException(message);
 public record TableFilter(string Column,string Operator,string Value,string Type="文字列",string Upper="");
 // 取得後は行配列も辞書も変更しない。同値の行を操作前後で共有し、参照一致で比較を省略するため。
 public record Snapshot(string[] Columns, Dictionary<string,string?[]> Rows, DateTimeOffset At);
@@ -20,7 +23,7 @@ public static class Engine {
  public const string ExcelLimitError="Excelの上限（1セル32,767文字、1,048,576行、16,384列）を超えるため、エビデンスをコピーできません。対象を絞ってください。";
  static string Q(string s, bool pg) => pg ? "\""+s.Replace("\"","\"\"")+"\"" : "["+s.Replace("]","]]")+"]";
  public static string? Normalize(object v) => v switch { DBNull => null, byte[] b => Convert.ToHexString(b), DateTime d => d.ToString("yyyy-MM-ddTHH:mm:ss.fffffff",CultureInfo.InvariantCulture), DateTimeOffset d => d.UtcDateTime.ToString("yyyy-MM-ddTHH:mm:ss.fffffff",CultureInfo.InvariantCulture), decimal d => d.ToString("G29",CultureInfo.InvariantCulture), IFormattable f => f.ToString(null,CultureInfo.InvariantCulture), _ => v.ToString() };
- public static async Task<Snapshot> Capture(bool pg,string connection,TableSpec spec,Snapshot? previous=null,CancellationToken cancellationToken=default,IProgress<int>? progress=null) {
+ public static async Task<Snapshot> Capture(bool pg,string connection,TableSpec spec,Snapshot? previous=null,CancellationToken cancellationToken=default,IProgress<int>? progress=null,long expectedRows=0) {
  if(spec.Keys.Length==0) throw new InvalidOperationException("主キーを指定してください。");
  await using DbConnection db=pg?new NpgsqlConnection(connection):new SqlConnection(connection);
  await db.OpenAsync(cancellationToken);
@@ -34,12 +37,17 @@ public static class Engine {
  if(keys.Any(k=>k<0)) throw new InvalidOperationException("指定した主キー列がありません。");
  if(spec.Columns is not {Length:>0}&&spec.Ignored.Any(k=>!columns.Contains(k,StringComparer.OrdinalIgnoreCase))) throw new InvalidOperationException("除外列がありません。");
  if(spec.Keys.Intersect(spec.Ignored,StringComparer.OrdinalIgnoreCase).Any()) throw new InvalidOperationException("主キーは除外できません。");
+ var matchIndexes=ComparisonIndexes(columns,spec);
+ var matchingRows=matchIndexes.Length>0&&!matchIndexes.SequenceEqual(keys)?new HashSet<string?[]>((int)Math.Clamp(expectedRows,0,1_000_000),new RowKeyComparer(matchIndexes)):null;
  // ponytail: snapshots stay in RAM; disk partitions are needed beyond available memory.
- var rows=new Dictionary<string,string?[]>(previous?.Rows.Count??0,StringComparer.Ordinal);
+ // COUNTは取得と別時点なので容量のヒントにだけ使う。巨大な見積りで取得前にメモリを使い切らないよう初期確保は100万件まで。
+ var rows=new Dictionary<string,string?[]>(previous?.Rows.Count??(int)Math.Clamp(expectedRows,0,1_000_000),StringComparer.Ordinal);
  var reuse=previous!=null&&columns.SequenceEqual(previous.Columns,StringComparer.OrdinalIgnoreCase);
+ var readers=Enumerable.Range(0,columns.Length).Select(i=>ValueReader(reader.GetFieldType(i))).ToArray();
  var keyValues=new string?[keys.Length];
  while(await reader.ReadAsync(cancellationToken)) {
- var row=new string?[columns.Length];for(var i=0;i<row.Length;i++)row[i]=Normalize(reader.GetValue(i));
+ var row=new string?[columns.Length];for(var i=0;i<row.Length;i++)row[i]=reader.IsDBNull(i)?null:readers[i](reader,i);
+ if(matchIndexes.Length>0)ValidateMatchingRow(row,matchIndexes,matchingRows,spec,pg?"PostgreSQL":"SQL Server");
  for(var i=0;i<keys.Length;i++){keyValues[i]=row[keys[i]];if(keyValues[i]==null)throw new InvalidOperationException("主キーがNULLです。");}
  // 複合キーを区切り文字で連結すると値に区切り文字がある場合に衝突するため、JSON配列で識別する。
  var key=System.Text.Json.JsonSerializer.Serialize(keyValues);
@@ -47,10 +55,53 @@ public static class Engine {
  var same=true;for(var i=0;i<row.Length;i++)if(row[i]==old[i])row[i]=old[i];else same=false;
  if(same)row=old;
  }
- if(!rows.TryAdd(key,row))throw new InvalidOperationException("主キーが一意ではありません。");
+ if(!rows.TryAdd(key,row)){if(spec.BusinessIdentity)throw ConfigurationError(spec,$"{(pg?"PostgreSQL":"SQL Server")}の操作前後の識別列（{string.Join(", ",spec.Keys)}）が重複しています。別の対応列を選択してください。");throw new InvalidOperationException("主キーが一意ではありません。");}
  if(rows.Count%10000==0)progress?.Report(rows.Count);
  }
  progress?.Report(rows.Count);await reader.DisposeAsync(); await tx.CommitAsync(cancellationToken); return new(columns,rows,DateTimeOffset.UtcNow);
+ }
+ // 行配列をコピーせず、指定列の値だけで一意性を検証する。検証用集合は取得終了時に解放する。
+ sealed class RowKeyComparer(int[] indexes):IEqualityComparer<string?[]> {
+ public bool Equals(string?[]? x,string?[]? y){if(ReferenceEquals(x,y))return true;if(x==null||y==null)return false;foreach(var i in indexes)if(x[i]!=y[i])return false;return true;}
+ public int GetHashCode(string?[] row){var hash=new HashCode();foreach(var i in indexes)hash.Add(row[i],StringComparer.Ordinal);return hash.ToHashCode();}
+ }
+ static ComparisonConfigurationException ConfigurationError(TableSpec spec,string reason)=>new($"{spec.Name}: {reason}");
+ static int[] ComparisonIndexes(string[] columns,TableSpec spec) {
+ var match=spec.MatchKeys??[];var excluded=spec.ComparisonIgnored??[];
+ if(spec.MatchKeys is {Length:0}||match.Distinct(StringComparer.OrdinalIgnoreCase).Count()!=match.Length)
+ throw ConfigurationError(spec,"DB間の対応列を選択してください。重複した列は指定できません。");
+ if(match.Intersect(spec.Ignored,StringComparer.OrdinalIgnoreCase).Any())throw ConfigurationError(spec,"DB間の対応列は変更検出から除外できません。");
+ foreach(var name in match.Concat(excluded))if(!columns.Contains(name,StringComparer.OrdinalIgnoreCase))throw ConfigurationError(spec,"比較設定に取得対象外の列があります。取得列・比較設定を見直してください。");
+ return match.Select(k=>Array.FindIndex(columns,c=>string.Equals(c,k,StringComparison.OrdinalIgnoreCase))).ToArray();
+ }
+ static void ValidateMatchingRow(string?[] row,int[] indexes,HashSet<string?[]>? seen,TableSpec spec,string database) {
+ foreach(var i in indexes)if(row[i]==null)throw ConfigurationError(spec,$"{database}のDB間の対応列（{string.Join(", ",spec.MatchKeys!)}）にNULLがあります。別の対応列を選択してください。");
+ if(seen!=null&&!seen.Add(row))throw ConfigurationError(spec,$"{database}のDB間の対応列（{string.Join(", ",spec.MatchKeys!)}）が重複しています。複数列の組み合わせなどを選択してください。");
+ }
+ // 型は列ごとに一度だけ判定。主要な値型はobjectへのボックス化を避け、Normalizeと同じ書式を使う。
+ internal static Func<DbDataReader,int,string?> ValueReader(Type type)=>Type.GetTypeCode(type) switch {
+ TypeCode.Int32=>static(r,i)=>r.GetInt32(i).ToString(CultureInfo.InvariantCulture),
+ TypeCode.Int64=>static(r,i)=>r.GetInt64(i).ToString(CultureInfo.InvariantCulture),
+ TypeCode.Decimal=>static(r,i)=>r.GetDecimal(i).ToString("G29",CultureInfo.InvariantCulture),
+ TypeCode.DateTime=>static(r,i)=>r.GetDateTime(i).ToString("yyyy-MM-ddTHH:mm:ss.fffffff",CultureInfo.InvariantCulture),
+ TypeCode.Boolean=>static(r,i)=>r.GetBoolean(i).ToString(),
+ TypeCode.String=>static(r,i)=>r.GetString(i),
+ _=>static(r,i)=>Normalize(r.GetValue(i))
+ };
+ public static async Task<(Snapshot Pg,Snapshot Sql)> CapturePair(string pgConnection,string sqlConnection,TableSpec pgSpec,TableSpec sqlSpec,
+ Snapshot? pgPrevious=null,Snapshot? sqlPrevious=null,(long Pg,long Sql) expectedCounts=default,CancellationToken cancellationToken=default,
+ IProgress<(bool Pg,int Count)>? progress=null) {
+ using var linked=CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+ async Task<Snapshot> Read(bool pg) {
+ try {return await Task.Run(()=>Capture(pg,pg?pgConnection:sqlConnection,pg?pgSpec:sqlSpec,pg?pgPrevious:sqlPrevious,
+ linked.Token,progress==null?null:new CaptureProgress(pg,progress),pg?expectedCounts.Pg:expectedCounts.Sql),linked.Token);}
+ catch{linked.Cancel();throw;}
+ }
+ // 最大2接続。片側が失敗したらもう片側も中断し、両タスクの解放完了まで待ってから例外を返す。
+ var p=Read(true);var s=Read(false);await Task.WhenAll(p,s);return(await p,await s);
+ }
+ sealed class CaptureProgress(bool pg,IProgress<(bool Pg,int Count)> progress):IProgress<int> {
+ public void Report(int value)=>progress.Report((pg,value));
  }
  // 件数確認はCaptureとは別クエリ。間のDB更新でずれるため、最終的な件数表示にはSnapshot.Rows.Countを使う。
  public static async Task<long> CountRows(bool pg,string connection,TableSpec spec,CancellationToken cancellationToken=default) {
@@ -66,8 +117,8 @@ public static class Engine {
  try {
  if(spec.FilterJoin is not ("AND" or "OR"))throw new InvalidOperationException("条件の結合方法が正しくありません。");
  string Resolve(string name)=>spec.Definition==null?name:spec.Definition.SingleOrDefault(c=>string.Equals(c.Name,name,StringComparison.OrdinalIgnoreCase))?.Name??throw new InvalidOperationException("DBに存在しない列は指定できません。");
- foreach(var name in spec.Keys.Concat(spec.Ignored))Resolve(name);
- var selected=spec.Columns is {Length:>0} columns?columns.Concat(spec.Keys).Select(Resolve).Distinct(StringComparer.OrdinalIgnoreCase).ToArray():[];
+ foreach(var name in spec.Keys.Concat(spec.Ignored).Concat(spec.MatchKeys??[]).Concat(spec.ComparisonIgnored??[]))Resolve(name);
+ var selected=spec.Columns is {Length:>0} columns?columns.Concat(spec.Keys).Concat(spec.MatchKeys??[]).Select(Resolve).Distinct(StringComparer.OrdinalIgnoreCase).ToArray():[];
  if(selected.Any(string.IsNullOrWhiteSpace))throw new InvalidOperationException("取得列が正しくありません。");
  var projection=count?(pg?"COUNT(*)":"COUNT_BIG(*)"):selected.Length==0?"*":string.Join(", ",selected.Select(c=>Q(c,pg)));
  cmd.CommandTimeout=120;cmd.CommandText=$"SELECT {projection} FROM {Q(spec.Schema,pg)}.{Q(spec.Name,pg)}";
@@ -106,6 +157,16 @@ public static class Engine {
  var pm=Map(pa);var bm=Map(sb);var sm=Map(sa);var identity=Enumerable.Range(0,columns.Length).ToArray();
  var ignored=spec.Ignored.ToHashSet(StringComparer.OrdinalIgnoreCase);
  var active=identity.Where(i=>!ignored.Contains(columns[i])).ToArray();
+ var comparisonIgnored=(spec.ComparisonIgnored??[]).ToHashSet(StringComparer.OrdinalIgnoreCase);
+ var judged=active.Where(i=>!comparisonIgnored.Contains(columns[i])).ToArray();
+ var matchIndexes=ComparisonIndexes(columns,spec);var businessMatching=matchIndexes.Length>0;
+ if(businessMatching) {
+ // 保存データや直接Compareする呼び出しにも同じ検証を適用する。行値はコピーしない。
+ foreach(var (snapshot,map,database) in new[]{(pb,identity,"PostgreSQL 操作前"),(pa,pm,"PostgreSQL 操作後"),(sb,bm,"SQL Server 操作前"),(sa,sm,"SQL Server 操作後")}) {
+ var indexes=matchIndexes.Select(i=>map[i]).ToArray();var seen=new HashSet<string?[]>(Math.Min(snapshot.Rows.Count,1_000_000),new RowKeyComparer(indexes));
+ foreach(var row in snapshot.Rows.Values){cancellationToken.ThrowIfCancellationRequested();ValidateMatchingRow(row,indexes,seen,spec,database);}
+ }
+ }
  // 全件の集合・ソート・行コピーを避け、変更した主キーだけを保持する。
  var candidates=new HashSet<string>(StringComparer.Ordinal);
  void FindChanges(Snapshot before,Snapshot after,int[] beforeMap,int[] afterMap,HashSet<string> changedKeys) {
@@ -114,52 +175,78 @@ public static class Engine {
  foreach(var (key,row) in before.Rows) {
  cancellationToken.ThrowIfCancellationRequested();
  if(!after.Rows.TryGetValue(key,out var next)){changedKeys.Add(key);continue;}
+ if(businessMatching)foreach(var i in matchIndexes)if(row[beforeMap[i]]!=next[afterMap[i]])
+ throw ConfigurationError(spec,"操作前後でDB間の対応列が変わっています。変更されない列を選び、操作前から取得し直してください。");
  if(sameOrder&&ReferenceEquals(row,next))continue;
  if(sameOrder){foreach(var i in beforeActive)if(row[i]!=next[i]){changedKeys.Add(key);break;}}
  else{for(var i=0;i<beforeActive.Length;i++)if(row[beforeActive[i]]!=next[afterActive[i]]){changedKeys.Add(key);break;}}
  }
  foreach(var key in after.Rows.Keys){cancellationToken.ThrowIfCancellationRequested();if(!before.Rows.ContainsKey(key))changedKeys.Add(key);}
  }
- if((long)pb.Rows.Count+sb.Rows.Count>=1_000_000&&Environment.ProcessorCount>1) {
  var sqlCandidates=new HashSet<string>(StringComparer.Ordinal);
+ if((long)pb.Rows.Count+sb.Rows.Count>=1_000_000&&Environment.ProcessorCount>1) {
+ try {
  Parallel.Invoke(new ParallelOptions{CancellationToken=cancellationToken,MaxDegreeOfParallelism=2},
  ()=>FindChanges(pb,pa,identity,pm,candidates),()=>FindChanges(sb,sa,bm,sm,sqlCandidates));
- candidates.UnionWith(sqlCandidates);
- }else{FindChanges(pb,pa,identity,pm,candidates);FindChanges(sb,sa,bm,sm,candidates);}
- string?[]? AlignRow(Snapshot snapshot,string key,int[] map) {
+ }catch(AggregateException e) when(e.Flatten().InnerExceptions.All(error=>error is ComparisonConfigurationException)){throw e.Flatten().InnerExceptions[0];}
+ }else{FindChanges(pb,pa,identity,pm,candidates);FindChanges(sb,sa,bm,sm,sqlCandidates);}
+ if(!businessMatching)candidates.UnionWith(sqlCandidates);
+ var pgAfterAligned=pm.AsSpan().SequenceEqual(identity);var sqlBeforeAligned=bm.AsSpan().SequenceEqual(identity);var sqlAfterAligned=sm.AsSpan().SequenceEqual(identity);
+ string?[]? AlignRow(Snapshot snapshot,string key,int[] map,bool alignedOrder) {
  if(!snapshot.Rows.TryGetValue(key,out var row))return null;
- if(map.SequenceEqual(identity))return row;
+ if(alignedOrder)return row;
  var aligned=new string?[columns.Length];for(var i=0;i<aligned.Length;i++)aligned[i]=row[map[i]];return aligned;
  }
- Change Get(string key,Snapshot before,Snapshot after,int[] beforeMap,int[] afterMap) {
- var b=AlignRow(before,key,beforeMap);var a=AlignRow(after,key,afterMap);
+ Change Get(string key,Snapshot before,Snapshot after,int[] beforeMap,int[] afterMap,bool beforeAligned,bool afterAligned) {
+ var b=AlignRow(before,key,beforeMap,beforeAligned);var a=AlignRow(after,key,afterMap,afterAligned);
  var changed=active.Where(i=>b==null||a==null||b[i]!=a[i]).ToArray();
  return new(key,b==null?(a==null?"変更なし":"追加"):a==null?"削除":changed.Length>0?"更新":"変更なし",b,a,changed);
  }
  var result=new List<Evidence>(candidates.Count);
- foreach(var key in candidates.Order(StringComparer.Ordinal)) {
+ void Add(string key,Change p,Change s) {
+ var diff=p.Operation!=s.Operation?judged:judged.Where(i=>p.After?[i]!=s.After?[i]).ToArray();
+ result.Add(new(key,p,s,p.Operation==s.Operation&&diff.Length==0,diff));
+ }
+ if(businessMatching) {
+ Dictionary<string,List<Change>> Group(HashSet<string> keys,Snapshot before,Snapshot after,int[] beforeMap,int[] afterMap,bool beforeAligned,bool afterAligned) {
+ var groups=new Dictionary<string,List<Change>>(StringComparer.Ordinal);
+ foreach(var key in keys) {
+ cancellationToken.ThrowIfCancellationRequested();var change=Get(key,before,after,beforeMap,afterMap,beforeAligned,afterAligned);
+ var values=change.After??change.Before!;var matchingKey=System.Text.Json.JsonSerializer.Serialize(matchIndexes.Select(i=>values[i]).ToArray());
+ if(!groups.TryGetValue(matchingKey,out var list))groups.Add(matchingKey,list=[]);list.Add(change);
+ }return groups;
+ }
+ var pgGroups=Group(candidates,pb,pa,identity,pm,true,pgAfterAligned);var sqlGroups=Group(sqlCandidates,sb,sa,bm,sm,sqlBeforeAligned,sqlAfterAligned);
+ var missing=new Change("","変更なし",null,null,[]);
+ foreach(var key in pgGroups.Keys.Concat(sqlGroups.Keys).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal)) {
+ cancellationToken.ThrowIfCancellationRequested();var p=pgGroups.GetValueOrDefault(key)??[];var s=sqlGroups.GetValueOrDefault(key)??[];
+ // 同じ業務キーで削除＋再追加が起きても両方を残す。まず同種の操作を照合し、残りは種別不一致として扱う。
+ foreach(var change in p.ToArray()) {var index=s.FindIndex(c=>c.Operation==change.Operation);if(index<0)continue;Add(key,change,s[index]);p.Remove(change);s.RemoveAt(index);}
+ for(var i=0;i<Math.Max(p.Count,s.Count);i++)Add(key,i<p.Count?p[i]:missing,i<s.Count?s[i]:missing);
+ }
+ }else foreach(var key in candidates.Order(StringComparer.Ordinal)) {
  cancellationToken.ThrowIfCancellationRequested();
- var p=Get(key,pb,pa,identity,pm);var s=Get(key,sb,sa,bm,sm);
+ var p=Get(key,pb,pa,identity,pm,true,pgAfterAligned);var s=Get(key,sb,sa,bm,sm,sqlBeforeAligned,sqlAfterAligned);
  if(p.Operation=="変更なし"&&s.Operation=="変更なし")continue;
  // 変更検出とDB間の判定は独立。更新前や更新列が異なっても、操作後の取得値が同じなら一致。
  // 片側だけの操作は比較する変更行がないため、全対象列を不一致にする。
- var diff=p.Operation!=s.Operation?active:active.Where(i=>p.After?[i]!=s.After?[i]).ToArray();
- result.Add(new(key,p,s,p.Operation==s.Operation&&diff.Length==0,diff));
+ Add(key,p,s);
  }
  // 件数が異なる表のサマリーと最終判定を揃える。差分行だけを走査し、全スナップショットは再走査しない。
  if(result.Count(e=>e.Pg.Operation!="変更なし")!=result.Count(e=>e.Sql.Operation!="変更なし"))
- for(var i=0;i<result.Count;i++){cancellationToken.ThrowIfCancellationRequested();result[i]=result[i] with{Match=false,Different=active};}
+ for(var i=0;i<result.Count;i++){cancellationToken.ThrowIfCancellationRequested();result[i]=result[i] with{Match=false,Different=judged};}
  return result;
  }
  static string Visible(string? value) => value==null?"〈NULL〉":value.Length==0?"〈空文字〉":value.Replace("\r","\\r").Replace("\n","\\n").Replace("\t","\\t");
  public static (string Html,string Text,string SpreadsheetXml) Render(string[] columns,List<Evidence> evidence,TableSpec spec,Snapshot pb,Snapshot pa,Snapshot sb,Snapshot sa,bool spreadsheetOnly=false,CancellationToken cancellationToken=default) {
  var pgCount=evidence.Count(e=>e.Pg.Operation!="変更なし");var sqlCount=evidence.Count(e=>e.Sql.Operation!="変更なし");
  var dataRows=evidence.Count==0?0:(long)Math.Max(1,pgCount)+Math.Max(1,sqlCount);
- if(dataRows+3+(spec.Ignored.Length>0?1:0)+(spec.Columns is {Length:>0}?1:0)>1048576||columns.Length+2>16384)throw new InvalidOperationException(ExcelLimitError);
+ if(dataRows+3+(spec.Ignored.Length>0?1:0)+(spec.Columns is {Length:>0}?1:0)+(spec.MatchKeys is {Length:>0}?1:0)+(spec.ComparisonIgnored is {Length:>0}?1:0)>1048576||columns.Length+2>16384)throw new InvalidOperationException(ExcelLimitError);
  // Excelの推測による日付・数値・数式への変換を防ぐため、DataのString型と書式@を両方維持する。
  // ここに追加した上部の行は、直前のExcel行数上限チェックにも反映する。
  XNamespace ss="urn:schemas-microsoft-com:office:spreadsheet";
- var xml=new StringBuilder();
+ // XML宣言も最初から同じバッファへ書き、大きな完成文字列の連結コピーを避ける。
+ var xml=new StringBuilder("<?xml version=\"1.0\" encoding=\"utf-8\"?>");
  using var writer=XmlWriter.Create(xml,new XmlWriterSettings{OmitXmlDeclaration=true,Indent=false});
  var styles=new XElement(ss+"Styles",new[]{"ffffff","d9e2f3","e2f0d9","dddddd","ffc7ce","fff2cc","ddebf7"}.Select(color=>new XElement(ss+"Style",new XAttribute(ss+"ID","C"+color),new XElement(ss+"NumberFormat",new XAttribute(ss+"Format","@")),new XElement(ss+"Alignment",new XAttribute(ss+"Vertical","Top")),new XElement(ss+"Interior",new XAttribute(ss+"Color","#"+color),new XAttribute(ss+"Pattern","Solid")),new XElement(ss+"Borders",new[]{"Bottom","Left","Right","Top"}.Select(side=>new XElement(ss+"Border",new XAttribute(ss+"Position",side),new XAttribute(ss+"LineStyle","Continuous"),new XAttribute(ss+"Weight",1)))))));
  var html=new StringBuilder("<html><head><meta charset='utf-8'></head><body><table xmlns:x='urn:schemas-microsoft-com:office:excel' border='1' style='border-collapse:collapse'>");var text=new StringBuilder();
@@ -172,7 +259,9 @@ public static class Engine {
  foreach(var c in cells) {
  if(c.Value.Length>32767)throw new InvalidOperationException(ExcelLimitError);
  if(!spreadsheetOnly){html.Append("<td x:str style='mso-number-format:\"\\@\";white-space:pre-wrap;background-color:").Append(c.Color).Append("'><span style='mso-spacerun:yes'>").Append(WebUtility.HtmlEncode(c.Value)).Append("</span></td>");if(!first)text.Append('\t');text.Append(c.Value.Length>0&&"=+-@".Contains(c.Value[0])?"'"+c.Value:c.Value);first=false;}
- writer.WriteStartElement("Cell",ss.NamespaceName);writer.WriteAttributeString("ss","StyleID",ss.NamespaceName,"C"+c.Color[1..]);
+ // 色は固定7種。セルごとに部分文字列とStyleID文字列を生成しない。
+ var style=c.Color switch {"#ffffff"=>"Cffffff","#d9e2f3"=>"Cd9e2f3","#e2f0d9"=>"Ce2f0d9","#dddddd"=>"Cdddddd","#ffc7ce"=>"Cffc7ce","#fff2cc"=>"Cfff2cc","#ddebf7"=>"Cddebf7",_=>"C"+c.Color[1..]};
+ writer.WriteStartElement("Cell",ss.NamespaceName);writer.WriteAttributeString("ss","StyleID",ss.NamespaceName,style);
  writer.WriteStartElement("Data",ss.NamespaceName);writer.WriteAttributeString("ss","Type",ss.NamespaceName,"String");writer.WriteAttributeString("xml","space",null,"preserve");writer.WriteString(c.Value);writer.WriteEndElement();writer.WriteEndElement();
  }
  writer.WriteEndElement();if(!spreadsheetOnly){html.Append("</tr>");text.AppendLine();}
@@ -182,7 +271,11 @@ public static class Engine {
  Row(new[]{($"対象: {spec.Name}"+condition,"#ffffff")});
  if(spec.Columns is {Length:>0})Row(new[]{("取得列: "+string.Join(", ",columns),"#ffffff")});
  if(spec.Ignored.Length>0)Row(new[]{("除外列: "+string.Join(", ",spec.Ignored),"#ffffff")});
+ if(spec.MatchKeys is {Length:>0})Row(new[]{("DB間の対応列: "+string.Join(", ",spec.MatchKeys)+(spec.BusinessIdentity?"（操作前後の識別にも使用）":""),"#ffffff")});
+ if(spec.ComparisonIgnored is {Length:>0})Row(new[]{("DB間判定の除外列: "+string.Join(", ",spec.ComparisonIgnored),"#ffffff")});
  Row(new[]{"DB","操作"}.Concat(columns).Select(c=>(c,"#d9e2f3")));
+ // 数百列の更新で各セルから変更列配列を再走査すると列数の二乗になる。行ごとに印を再利用する。
+ var changedCells=new bool[columns.Length];
  foreach(var (db,pg,count) in new[]{("PostgreSQL",true,pgCount),("SQL Server",false,sqlCount)}) {
  foreach(var e in evidence) {
  var c=pg?e.Pg:e.Sql;
@@ -190,19 +283,20 @@ public static class Engine {
  if(c.Operation=="変更なし"){if(count>0)continue;Row(new[]{(db,"#ffffff"),(c.Operation,"#ffffff")}.Concat(columns.Select(_=>("","#ffffff"))));break;}
  // 削除行の表示は全列「行なし」。主キーによる対応付けはCompareで済ませ、削除前の値は出力しない。
  var values=c.After;
- Row(new[]{(db,"#ffffff"),(c.Operation,c.Operation=="追加"?"#ddebf7":c.Operation=="削除"?"#dddddd":"#ffffff")}.Concat(columns.Select((col,i)=>(values==null?"〈行なし〉":Visible(values[i]),c.Operation=="追加"?"#ddebf7":c.Operation=="削除"?"#dddddd":c.Changed.Contains(i)?"#fff2cc":"#ffffff")))); }
+ Array.Clear(changedCells);foreach(var i in c.Changed)if((uint)i<(uint)changedCells.Length)changedCells[i]=true;
+ Row(new[]{(db,"#ffffff"),(c.Operation,c.Operation=="追加"?"#ddebf7":c.Operation=="削除"?"#dddddd":"#ffffff")}.Concat(columns.Select((col,i)=>(values==null?"〈行なし〉":Visible(values[i]),c.Operation=="追加"?"#ddebf7":c.Operation=="削除"?"#dddddd":changedCells[i]?"#fff2cc":"#ffffff")))); }
  }
  // 行数が異なる表は全列×。同数なら変更行の操作後を列ごとに集約する。
  var different=evidence.SelectMany(e=>e.Different).ToHashSet();
- Row(new[]{("判定","#d9e2f3"),("","#ffffff")}.Concat(columns.Select((col,i)=>pgCount!=sqlCount?("×","#ffc7ce"):spec.Ignored.Contains(col,StringComparer.OrdinalIgnoreCase)?("除外","#ffffff"):different.Contains(i)?("×","#ffc7ce"):("◯","#e2f0d9"))));
+ Row(new[]{("判定","#d9e2f3"),("","#ffffff")}.Concat(columns.Select((col,i)=>pgCount!=sqlCount?("×","#ffc7ce"):spec.Ignored.Concat(spec.ComparisonIgnored??[]).Contains(col,StringComparer.OrdinalIgnoreCase)?("除外","#ffffff"):different.Contains(i)?("×","#ffc7ce"):("◯","#e2f0d9"))));
  if(!spreadsheetOnly)html.Append("</table></body></html>");
  writer.WriteEndElement();writer.WriteEndElement();writer.WriteEndElement();writer.Flush();
- return(spreadsheetOnly?"":html.ToString(),text.ToString(),"<?xml version=\"1.0\" encoding=\"utf-8\"?>"+xml);
+ return(spreadsheetOnly?"":html.ToString(),text.ToString(),xml.ToString());
 
  }
  // 同じRenderで生成した表を1枚へ連結する。大量行をXMLツリーに展開せず、行単位でコピーする。
  public static string CombineSpreadsheetXml(IEnumerable<string> tables,CancellationToken cancellationToken=default) {
- const string ns="urn:schemas-microsoft-com:office:spreadsheet";var output=new StringBuilder();
+ const string ns="urn:schemas-microsoft-com:office:spreadsheet";var output=new StringBuilder("<?xml version=\"1.0\" encoding=\"utf-8\"?>");
  using var writer=XmlWriter.Create(output,new XmlWriterSettings{OmitXmlDeclaration=true});
  writer.WriteStartElement("Workbook",ns);writer.WriteAttributeString("xmlns","ss",null,ns);
  var first=true;long rows=0;
@@ -221,7 +315,7 @@ public static class Engine {
  }
  if(first)throw new InvalidOperationException("出力対象のテーブルがありません。");
  writer.WriteEndElement();writer.WriteEndElement();writer.WriteEndElement();writer.Flush();
- return "<?xml version=\"1.0\" encoding=\"utf-8\"?>"+output;
+ return output.ToString();
  }
  public static string ClipboardHtml(string fragment) {
  const string start="<!--StartFragment-->";const string end="<!--EndFragment-->";

@@ -17,13 +17,15 @@ static class Program {
 }
 class MainForm:Form {
  readonly string pgConnection="",sqlConnection="";
- readonly ComboBox table=new(){DropDownStyle=ComboBoxStyle.DropDownList,Width=300};
+ readonly SearchColumnCombo table=new(){Width=570,AccessibleName="テーブル一覧"};
  readonly TextBox ignore=new(){Width=620,ReadOnly=true};
  readonly Button pickIgnored=new(){Text="列を選択",AutoSize=true},pickColumns=new(){Text="列を選択",AutoSize=true};
- readonly TextBox tableSearch=new(){Width=175,PlaceholderText="テーブル名で絞り込み"};
  bool filteringTables;CommonTable[] allTables=[];TableColumn[] pgColumns=[],sqlColumns=[],availableColumns=[];
  readonly Button reload=new(){Text="テーブル一覧を再読込",AutoSize=true};
  readonly TextBox selectedColumns=new(){Width=620,ReadOnly=true};
+ readonly Button comparison=new(){Text="比較設定",AutoSize=true};
+ readonly Label comparisonSummary=new(){Width=610,Height=27,TextAlign=ContentAlignment.MiddleLeft};
+ string[]? matchKeys;string[] comparisonIgnored=[];string comparisonTable="";
  readonly FlowLayoutPanel filterRows=new(){Width=880,FlowDirection=FlowDirection.TopDown,WrapContents=false,AutoScroll=true};
  readonly FlowLayoutPanel panel=new(){Dock=DockStyle.Top,AutoSize=true,FlowDirection=FlowDirection.TopDown,WrapContents=false,Padding=new Padding(6)};
  readonly Button addFilter=new(){Text="＋ 条件を追加",AutoSize=true};
@@ -41,12 +43,14 @@ class MainForm:Form {
  string? spreadsheetXml;readonly Control[] settings;
  public MainForm(bool demo=false,bool multipleDemo=false){this.demo=demo;Text="DBChangeLogger";ClientSize=new Size(900,300);BackColor=SystemColors.Window;
  void Field(string label,Control input){var line=new FlowLayoutPanel(){Width=870,Height=30};line.Controls.Add(new Label(){Text=label,Width=100,Height=27,TextAlign=ContentAlignment.MiddleLeft});line.Controls.Add(input);panel.Controls.Add(line);}
- var tableInputs=new FlowLayoutPanel(){Width=750,Height=28};table.Width=390;tableInputs.Controls.AddRange(new Control[]{tableSearch,table,reload});Field("テーブル一覧",tableInputs);
+ var tableInputs=new FlowLayoutPanel(){Width=750,Height=28};tableInputs.Controls.AddRange(new Control[]{table,reload});Field("テーブル一覧",tableInputs);
  var projectionInputs=new FlowLayoutPanel(){Width=750,Height=28};projectionInputs.Controls.AddRange(new Control[]{selectedColumns,pickColumns});Field("取得列",projectionInputs);
  var ignoreInputs=new FlowLayoutPanel(){Width=750,Height=28};ignoreInputs.Controls.AddRange(new Control[]{ignore,pickIgnored});Field("除外列",ignoreInputs);
- tableSearch.TextChanged+=(_,_)=>FilterTables();
+ var comparisonInputs=new FlowLayoutPanel(){Width=750,Height=28};comparisonInputs.Controls.AddRange(new Control[]{comparison,comparisonSummary});Field("DB間比較",comparisonInputs);
+ comparison.Click+=(_,_)=>ChooseComparison();
  pickColumns.Click+=(_,_)=>ChooseColumns(false);pickIgnored.Click+=(_,_)=>ChooseColumns(true);
- table.SelectedIndexChanged+=async(_,_)=>{if(filteringTables)return;UpdateTableSelection();await LoadColumnDefinitions();};
+ // 入力中の候補移動ではDBを読まず、一覧を閉じて選択を確定したときに読む。
+ table.SelectionConfirmed+=async(_,_)=>{if(filteringTables)return;UpdateTableSelection();await LoadColumnDefinitions();};
  reload.Click+=async(_,_)=>await LoadTables();
  var conditionHeader=new FlowLayoutPanel(){Width=870,Height=30};conditionHeader.Controls.AddRange(new Control[]{new Label(){Text="検索条件",Width=100,Height=27,TextAlign=ContentAlignment.MiddleLeft},addFilter});panel.Controls.Add(conditionHeader);
  panel.Controls.Add(filterRows);AddFilterRow();addFilter.Click+=(_,_)=>AddFilterRow();
@@ -54,12 +58,12 @@ class MainForm:Form {
  var targetButtons=new FlowLayoutPanel(){Width=750,Height=30,WrapContents=false};targetButtons.Controls.AddRange(new Control[]{addTarget,removeTarget});
  var targetInputs=new FlowLayoutPanel(){Width=750,AutoSize=true,FlowDirection=FlowDirection.TopDown,WrapContents=false};targetInputs.Controls.AddRange(new Control[]{trackedList,targetButtons});
  var targetLine=new FlowLayoutPanel(){Width=870,AutoSize=true,WrapContents=false};targetLine.Controls.Add(new Label(){Text="追跡対象",Width=100,Height=27,TextAlign=ContentAlignment.MiddleLeft});targetLine.Controls.Add(targetInputs);panel.Controls.Add(targetLine);
- addTarget.Click+=(_,_)=>{try{var target=BuildTarget();var index=targets.FindIndex(t=>string.Equals(t.PgSpec.Name,target.PgSpec.Name,StringComparison.OrdinalIgnoreCase));if(index<0)targets.Add(target);else targets[index]=target;RefreshTargets();status.Text=$"追跡対象 {targets.Count}テーブル。操作前をまとめて取得できます。";}catch(InvalidOperationException){status.Text="有効なテーブルと列を選択してください。";}};
+ addTarget.Click+=(_,_)=>{try{var target=BuildTarget();var index=targets.FindIndex(t=>string.Equals(t.PgSpec.Name,target.PgSpec.Name,StringComparison.OrdinalIgnoreCase));if(index<0)targets.Add(target);else targets[index]=target;RefreshTargets();status.Text=$"追跡対象 {targets.Count}テーブル。操作前をまとめて取得できます。";}catch(ComparisonConfigurationException e){status.Text=e.Message;}catch(InvalidOperationException){status.Text="有効なテーブルと列を選択してください。";}};
  removeTarget.Click+=(_,_)=>{if(trackedList.SelectedIndex>=0){targets.RemoveAt(trackedList.SelectedIndex);RefreshTargets();UpdateTableSelection();}};
  trackedList.SelectedIndexChanged+=(_,_)=>{if(!refreshingTargets&&execution==null&&trackedList.SelectedItem is TrackedTable target)ShowTarget(target);};
- settings=new Control[]{tableSearch,table,reload,ignoreInputs,projectionInputs,filterRows,addFilter,addTarget,removeTarget};
+ settings=new Control[]{table,reload,ignoreInputs,projectionInputs,comparison,filterRows,addFilter,addTarget,removeTarget};
  var reset=new Button(){Text="設定・取得結果をリセット",AutoSize=true};
- reset.Click+=(_,_)=>{ClearCaptured();foreach(var c in settings)c.Enabled=true;after.Enabled=copy.Enabled=false;UpdateTableSelection();grid.DataSource=null;grid.Visible=false;rowCounts.Text="取得対象件数: 未確認";reload.Enabled=!string.IsNullOrEmpty(pgConnection);status.Text=(table.SelectedItem as CommonTable)?.KeyError??(!string.IsNullOrEmpty(pgConnection)?"設定を変更できます。操作前から取得してください。":"接続先が設定されていません。作成者に設定済みのアプリを依頼してください。");};
+ reset.Click+=(_,_)=>{ClearCaptured();foreach(var c in settings)c.Enabled=true;after.Enabled=copy.Enabled=false;UpdateTableSelection();grid.DataSource=null;grid.Visible=false;rowCounts.Text="取得対象件数: 未確認";reload.Enabled=!string.IsNullOrEmpty(pgConnection);status.Text=(matchKeys==null?(table.SelectedItem as CommonTable)?.KeyError:null)??(!string.IsNullOrEmpty(pgConnection)?"設定を変更できます。操作前から取得してください。":"接続先が設定されていません。作成者に設定済みのアプリを依頼してください。");};
  var buttons=new FlowLayoutPanel(){Width=870,Height=34};buttons.Controls.AddRange(new Control[]{before,after,copy,reset,cancel});panel.Controls.Add(buttons);panel.Controls.Add(rowCounts);panel.Controls.Add(status);
  Controls.Add(grid);Controls.Add(panel);after.Enabled=false;
  Shown+=(_,_)=>{ResizeTargets();FitWindow();};grid.VisibleChanged+=(_,_)=>QueueFitWindow();status.SizeChanged+=(_,_)=>QueueFitWindow();rowCounts.SizeChanged+=(_,_)=>QueueFitWindow();
@@ -91,8 +95,8 @@ class MainForm:Form {
  async Task SaveSession() {
  if(demo)return;
  var finalStatus=status.Text;
- var state=new SavedSession(2,ConnectionId,selectedTable,selectedColumns.Text,ignore.Text,filterRows.Controls.OfType<FilterRow>().Select(r=>r.Saved).ToArray(),
-  null,null,null,null,spreadsheetXml,results,rowCounts.Text,finalStatus,tableSearch.Text,targets.ToArray());
+ var state=new SavedSession(3,ConnectionId,selectedTable,selectedColumns.Text,ignore.Text,filterRows.Controls.OfType<FilterRow>().Select(r=>r.Saved).ToArray(),
+  null,null,null,null,spreadsheetXml,results,rowCounts.Text,finalStatus,"",targets.ToArray(),matchKeys,comparisonIgnored);
  stateBusy=true;Enabled=false;status.Text="前回の内容を暗号化して保存中…";
  try{await Task.Run(()=>SessionStore.Save(SessionStore.DefaultPath,state));status.Text=finalStatus;}
  finally{stateBusy=false;Enabled=true;}
@@ -101,7 +105,8 @@ class MainForm:Form {
  if(!File.Exists(SessionStore.DefaultPath))return;
  stateBusy=true;Enabled=false;status.Text="前回の内容を復元中…";
  try {
- var restored=await Task.Run(()=>SessionStore.Load(SessionStore.DefaultPath));selectedTable=restored.Table;selectedColumns.Text=restored.Columns;ignore.Text=restored.Ignored;tableSearch.Text=restored.TableSearch;
+ var restored=await Task.Run(()=>SessionStore.Load(SessionStore.DefaultPath));selectedTable=restored.Table;selectedColumns.Text=restored.Columns;ignore.Text=restored.Ignored;
+ matchKeys=restored.MatchKeys;comparisonIgnored=restored.ComparisonIgnored??[];comparisonTable=selectedTable;
  filterRows.Controls.Clear();foreach(var filter in restored.Filters){AddFilterRow();((FilterRow)filterRows.Controls[^1]).Restore(filter);}if(filterRows.Controls.Count==0)AddFilterRow();ResizeFilterRows();status.Text=restored.Status+"（前回の入力を復元）";
  // 旧単一テーブルの保存データも、追跡対象1件として引き継ぐ。
  var savedTargets=restored.Targets??(restored.PgSpec!=null&&restored.SqlSpec!=null?[new TrackedTable(restored.PgSpec,restored.SqlSpec,restored.PgBefore,restored.SqlBefore,restored.Counts)]:[]);
@@ -124,15 +129,20 @@ class MainForm:Form {
  if(table.SelectedItem is not CommonTable selected||availableColumns.Length==0)throw new InvalidOperationException("テーブルを選択してください。");
  string[] Split(string text)=>text.Split(',',StringSplitOptions.TrimEntries|StringSplitOptions.RemoveEmptyEntries);
  var rows=filterRows.Controls.OfType<FilterRow>().Where(r=>r.Condition!=null).ToArray();var filters=rows.Select(r=>r.Condition!).ToArray();var joins=rows.Skip(1).Select(r=>r.Join.Text).ToArray();
- var (p,s)=selected.Specs(Split(ignore.Text),null);var columns=Split(selectedColumns.Text);
+ var (p,s)=selected.Specs(Split(ignore.Text),null,matchKeys,comparisonIgnored);var columns=Split(selectedColumns.Text);
+ foreach(var name in (matchKeys??[]).Concat(comparisonIgnored))if(!availableColumns.Any(c=>string.Equals(c.Name,name,StringComparison.OrdinalIgnoreCase)))
+ throw new ComparisonConfigurationException(selected.Postgres.Name+": 比較設定に存在しない共通列があります。「比較設定」を見直してください。");
+ // 両DBの識別列を取得に含める。対応列はCreateSelectCommandも自動追加する。
+ if(columns.Length>0)columns=columns.Concat(p.Keys).Concat(s.Keys).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
  return new(p with{Columns=columns,Filters=filters,FilterJoins=joins,Definition=pgColumns},s with{Columns=columns,Filters=filters,FilterJoins=joins,Definition=sqlColumns});
  }
  void ShowTarget(TrackedTable target){
- filteringTables=true;table.Items.Clear();table.Items.AddRange(allTables.Where(t=>t.Postgres.Name.Contains(tableSearch.Text,StringComparison.OrdinalIgnoreCase)).ToArray());
+ filteringTables=true;table.BeginUpdate();table.Items.Clear();table.Items.AddRange(allTables);
  var selected=allTables.FirstOrDefault(t=>t.Postgres.Name==target.PgSpec.Name)??new CommonTable(new(target.PgSpec.Name,target.PgSpec.Keys),new(target.SqlSpec.Name,target.SqlSpec.Keys));
- if(!table.Items.Contains(selected))table.Items.Add(selected);table.SelectedItem=selected;filteringTables=false;selectedTable=target.PgSpec.Name;
+ if(!table.Items.Contains(selected))table.Items.Add(selected);table.SelectedItem=selected;table.EndUpdate();filteringTables=false;selectedTable=target.PgSpec.Name;
  pgColumns=target.PgSpec.Definition??[];sqlColumns=target.SqlSpec.Definition??[];availableColumns=TableCatalog.CommonColumns(pgColumns,sqlColumns);
  selectedColumns.Text=string.Join(", ",target.PgSpec.Columns??[]);ignore.Text=string.Join(", ",target.PgSpec.Ignored);
+ matchKeys=target.PgSpec.MatchKeys;comparisonIgnored=target.PgSpec.ComparisonIgnored??[];comparisonTable=target.PgSpec.Name;
  filterRows.Controls.Clear();var conditions=target.PgSpec.Conditions;
  for(var i=0;i<conditions.Length;i++){AddFilterRow();var row=(FilterRow)filterRows.Controls[^1];row.Restore(new(conditions[i],i==0?"AND":target.PgSpec.JoinBefore(i)));row.BindColumns(SearchColumns());}
  if(conditions.Length==0)AddFilterRow();ResizeFilterRows();if(target.Counts.Length>0)rowCounts.Text=target.PgSpec.Name+" / "+target.Counts;
@@ -145,7 +155,7 @@ class MainForm:Form {
  foreach(var target in targets){
  var p=target.PgSpec with{Definition=await TableCatalog.ReadColumns(true,pgConnection,target.PgSpec.Name,token)};
  var s=target.SqlSpec with{Definition=await TableCatalog.ReadColumns(false,sqlConnection,target.SqlSpec.Name,token)};
- await CheckCounts(p,s,token);var pb=await CaptureWithProgress(true,p,null,"操作前",token);var sb=await CaptureWithProgress(false,s,null,"操作前",token);
+ var counts=await CheckCounts(p,s,token);var (pb,sb)=await CaptureWithProgress(p,s,null,null,"操作前",counts,token);
  captured.Add(new(p,s,pb,sb,$"PG 前 {pb.Rows.Count:N0}件 / SQL Server 前 {sb.Rows.Count:N0}件"));
  }
  targets.Clear();targets.AddRange(captured);RefreshTargets();foreach(var c in settings)c.Enabled=false;
@@ -156,7 +166,7 @@ class MainForm:Form {
  var token=execution!.Token;spreadsheetXml=null;results=[];RefreshResults();var summaries=new List<ResultSummary>();var tables=new List<string>();var completed=new List<TrackedTable>();
  foreach(var target in targets){
  var p=target.PgSpec;var s=target.SqlSpec;var pb=target.PgBefore!;var sb=target.SqlBefore!;
- await CheckCounts(p,s,token);var pa=await CaptureWithProgress(true,p,pb,"操作後",token);var sa=await CaptureWithProgress(false,s,sb,"操作後",token);status.Text=p.Name+" / 変更行を解析中…";
+ var counts=await CheckCounts(p,s,token);var (pa,sa)=await CaptureWithProgress(p,s,pb,sb,"操作後",counts,token);status.Text=p.Name+" / 変更行を解析中…";
  var output=await Task.Run(()=>{var changes=Engine.Compare(pb,pa,sb,sa,p,token);return(Changes:changes,Xml:Engine.Render(pb.Columns,changes,p,pb,pa,sb,sa,true,token).SpreadsheetXml);});
  tables.Add(output.Xml);summaries.AddRange(output.Changes.Select(e=>new ResultSummary(e.Key,e.Pg.Operation,e.Sql.Operation,string.Join(", ",e.Pg.Changed.Union(e.Sql.Changed).Select(i=>pb.Columns[i])),e.Match?"一致":"不一致",p.Name)));
  completed.Add(target with{Counts=$"PG 前 {pb.Rows.Count:N0}件 → 後 {pa.Rows.Count:N0}件 / SQL Server 前 {sb.Rows.Count:N0}件 → 後 {sa.Rows.Count:N0}件"});
@@ -178,28 +188,39 @@ class MainForm:Form {
  void UpdateTableSelection() {
  var selected=table.SelectedItem as CommonTable;
  if(selected!=null)selectedTable=selected.Postgres.Name;
- before.Enabled=execution==null&&!string.IsNullOrEmpty(pgConnection)&&(targets.Count>0||selected?.KeyError==null&&selected!=null&&availableColumns.Length>0);
- if(selected?.KeyError is {} error)status.Text=error;
+ before.Enabled=execution==null&&!string.IsNullOrEmpty(pgConnection)&&(targets.Count>0||selected!=null&&(selected.KeyError==null||matchKeys is {Length:>0})&&availableColumns.Length>0);
+ comparison.Enabled=execution==null&&!HasBaseline&&selected!=null&&availableColumns.Length>0;
+ comparisonSummary.Text=$"対応: {(matchKeys==null?"主キー":string.Join(", ",matchKeys))} / 判定除外: {(comparisonIgnored.Length==0?"なし":string.Join(", ",comparisonIgnored))}";
+ if(matchKeys==null&&selected?.KeyError is {} error)status.Text=error;
  else if(selected!=null&&!HasBaseline)status.Text="テーブルを選択しました。必要なら検索列と条件を指定し、操作前を取得してください。";
   if(!HasBaseline)rowCounts.Text="取得対象件数: 未確認";
  }
- void FilterTables() {
+ void RefreshTables() {
  var current=table.SelectedItem as CommonTable;filteringTables=true;table.BeginUpdate();table.Items.Clear();
- table.Items.AddRange(allTables.Where(t=>t.Postgres.Name.Contains(tableSearch.Text,StringComparison.OrdinalIgnoreCase)).ToArray());
+ table.Items.AddRange(allTables);
  if(current!=null&&table.Items.Contains(current))table.SelectedItem=current;
  table.EndUpdate();filteringTables=false;if(table.SelectedItem==null)availableColumns=[];UpdateTableSelection();
  }
  TableColumn[] SearchColumns()=>availableColumns.Where(c=>c.Searchable&&sqlColumns.Any(s=>string.Equals(s.Name,c.Name,StringComparison.OrdinalIgnoreCase)&&s.Searchable)).ToArray();
  void ChooseColumns(bool excluded) {
  var input=excluded?ignore:selectedColumns;
- var keys=(table.SelectedItem as CommonTable)?.Postgres.Keys??[];
+ var selectedTable=table.SelectedItem as CommonTable;var keys=(selectedTable?.Postgres.Keys??[]).Concat(selectedTable?.SqlServer.Keys??[]).Concat(matchKeys??[]).ToArray();
  var names=availableColumns.Where(c=>!excluded||!keys.Contains(c.Name,StringComparer.OrdinalIgnoreCase)).Select(c=>c.Name).ToArray();
  var selected=ElementPicker.Choose(this,excluded?"除外列を選択":"取得列を選択",names,input.Text.Split(',',StringSplitOptions.TrimEntries|StringSplitOptions.RemoveEmptyEntries));
  if(selected!=null)input.Text=string.Join(", ",selected);
  }
+ void ChooseComparison() {
+ if(table.SelectedItem is not CommonTable selected||availableColumns.Length==0)return;
+ var chosen=ComparisonDialog.Choose(this,selected,availableColumns.Select(c=>c.Name).ToArray(),matchKeys,comparisonIgnored,ignore.Text.Split(',',StringSplitOptions.TrimEntries|StringSplitOptions.RemoveEmptyEntries));
+ if(chosen is {} value){matchKeys=value.Keys;comparisonIgnored=value.Ignored;comparisonTable=selected.Postgres.Name;UpdateTableSelection();}
+ }
  async Task LoadColumnDefinitions() {
  if(demo||stateBusy||execution!=null||string.IsNullOrEmpty(pgConnection))return;
  if(table.SelectedItem is not CommonTable selected){pgColumns=sqlColumns=availableColumns=[];before.Enabled=false;return;}
+ if(comparisonTable!=selected.Postgres.Name) {
+ var saved=targets.FirstOrDefault(t=>t.PgSpec.Name==selected.Postgres.Name);
+ matchKeys=saved?.PgSpec.MatchKeys;comparisonIgnored=saved?.PgSpec.ComparisonIgnored??[];comparisonTable=selected.Postgres.Name;
+ }
  pgColumns=sqlColumns=availableColumns=[];
  await Execute(async()=>{
  status.Text="選択したテーブルの列定義を読み込み中…";
@@ -223,27 +244,29 @@ class MainForm:Form {
  var pg=await TableCatalog.Read(true,pgConnection,token);
  status.Text="SQL Serverのテーブル・主キーを読み込み中…（中断できます）";
  var sql=await TableCatalog.Read(false,sqlConnection,token);
- var common=TableCatalog.Common(pg,sql);allTables=common;FilterTables();
+ var common=TableCatalog.Common(pg,sql);allTables=common;RefreshTables();
  var selected=common.FirstOrDefault(t=>t.Postgres.Name==previousSelection);if(selected!=null)table.SelectedItem=selected;
  status.Text=common.Length==0?"両DBで読み取り可能な共通テーブルがありません（public / dbo）。":$"共通テーブル {common.Length:N0}件。テーブルを選択してください。";
  });
  await LoadColumnDefinitions();
  }
- async Task<Snapshot> CaptureWithProgress(bool pg,TableSpec spec,Snapshot? previous,string phase,CancellationToken token) {
+ async Task<(Snapshot Pg,Snapshot Sql)> CaptureWithProgress(TableSpec pg,TableSpec sql,Snapshot? pgPrevious,Snapshot? sqlPrevious,string phase,(long Pg,long Sql) counts,CancellationToken token) {
  // ProgressはUIキューへ遅れて届く。完了した段階の通知で次段階の表示を上書きしないようstageも照合する。
- var stage=$"{spec.Name} / {(pg?"PostgreSQL":"SQL Server")} {phase}";captureStage=stage;
- status.Text=stage+"を取得中…（中断できます）";
- var progress=new Progress<int>(count=>{if(!IsDisposed&&!token.IsCancellationRequested&&captureStage==stage)status.Text=$"{stage} 取得中: {count:N0}件（中断できます）";});
- try{return await Task.Run(()=>Engine.Capture(pg,pg?pgConnection:sqlConnection,spec,previous,token,progress));}
+ var stage=$"{pg.Name} / {phase}";captureStage=stage;var pgRead=0;var sqlRead=0;
+ void ShowProgress()=>status.Text=$"{stage} 取得中: PG {pgRead:N0}件 / SQL Server {sqlRead:N0}件（中断できます）";
+ ShowProgress();
+ var progress=new Progress<(bool Pg,int Count)>(value=>{if(IsDisposed||token.IsCancellationRequested||captureStage!=stage)return;if(value.Pg)pgRead=value.Count;else sqlRead=value.Count;ShowProgress();});
+ try{return await Engine.CapturePair(pgConnection,sqlConnection,pg,sql,pgPrevious,sqlPrevious,counts,token,progress);}
  finally{captureStage=null;}
  }
- async Task CheckCounts(TableSpec pg,TableSpec sql,CancellationToken token) {
+ async Task<(long Pg,long Sql)> CheckCounts(TableSpec pg,TableSpec sql,CancellationToken token) {
  status.Text=pg.Name+" / PostgreSQLの対象件数を確認中…（中断できます）";rowCounts.Text=pg.Name+" / 取得対象件数: PG 確認中 / SQL Server 未確認";
  var p=await Task.Run(()=>Engine.CountRows(true,pgConnection,pg,token));
  rowCounts.Text=$"{pg.Name} / 今回の取得対象: PG {p:N0}件 / SQL Server 確認中";
  status.Text="SQL Serverの対象件数を確認中…（中断できます）";
  var s=await Task.Run(()=>Engine.CountRows(false,sqlConnection,sql,token));
  rowCounts.Text=$"{pg.Name} / 今回の取得対象: PG {p:N0}件 / SQL Server {s:N0}件（必要に応じて中断できます）";
+ return(p,s);
  }
  // DBドライバーの例外本文には接続先等が入り得る。UIへそのまま表示せず、共有時も詳細を漏らさない。
  async Task Execute(Func<Task> action){
@@ -253,22 +276,24 @@ class MainForm:Form {
  catch(OperationCanceledException){ClearCaptured();grid.DataSource=null;grid.Visible=false;status.Text="中断しました。条件を調整し、操作前から取得してください。";}
  catch(FormatException){spreadsheetXml=null;status.Text="検索値を列の型へ変換できません。数値・日時・GUIDなどの入力形式を確認してください。";MessageBox.Show(status.Text,"検索条件エラー");}
  catch(OverflowException){spreadsheetXml=null;status.Text="検索値が列の型で扱える数値の範囲を超えています。";MessageBox.Show(status.Text,"検索条件エラー");}
+ catch(ComparisonConfigurationException e){spreadsheetXml=null;status.Text=e.Message;MessageBox.Show(status.Text,"比較設定エラー");}
  catch(InvalidOperationException e) when(e.Message==Engine.ExcelLimitError){spreadsheetXml=null;status.Text=Engine.ExcelLimitError;MessageBox.Show(status.Text,"Excel出力エラー");}
  catch(Exception){spreadsheetXml=null;status.Text="取得に失敗しました。検索条件・接続設定・ネットワーク・読み取り権限・テーブル・主キー・列構成を確認してください。";MessageBox.Show(status.Text,"実行エラー");}
- finally{captureStage=null;execution.Dispose();execution=null;if(!HasBaseline)foreach(var c in settings)c.Enabled=true;trackedList.Enabled=true;foreach(Control c in before.Parent!.Controls)c.Enabled=true;cancel.Enabled=false;before.Enabled=!string.IsNullOrEmpty(pgConnection)&&(targets.Count>0||table.SelectedItem is CommonTable {KeyError:null}&&availableColumns.Length>0);after.Enabled=HasBaseline;copy.Enabled=spreadsheetXml!=null;try{await SaveSession();}catch{status.Text="処理は完了しましたが、前回の内容を保存できませんでした。空き容量・保存先の権限を確認してください。";}}
+ finally{captureStage=null;execution.Dispose();execution=null;if(!HasBaseline)foreach(var c in settings)c.Enabled=true;trackedList.Enabled=true;foreach(Control c in before.Parent!.Controls)c.Enabled=true;cancel.Enabled=false;before.Enabled=!string.IsNullOrEmpty(pgConnection)&&(targets.Count>0||table.SelectedItem is CommonTable selected&&(selected.KeyError==null||matchKeys is {Length:>0})&&availableColumns.Length>0);after.Enabled=HasBaseline;copy.Enabled=spreadsheetXml!=null;try{await SaveSession();}catch{status.Text="処理は完了しましたが、前回の内容を保存できませんでした。空き容量・保存先の権限を確認してください。";}}
  }
 }
 
 class FilterRow:FlowLayoutPanel {
  readonly SearchColumnCombo column=new(){Width=190};
- readonly TextBox value=new(){Width=105},upper=new(){Width=100};
+ readonly TextBox value=new(){Width=160},upper=new(){Width=130};
  TableColumn[] definitions=[];string pendingColumn="";
- readonly ComboBox op=new(){DropDownStyle=ComboBoxStyle.DropDownList,Width=55},type=new(){DropDownStyle=ComboBoxStyle.DropDownList,Width=75};
+ readonly ComboBox op=new(){DropDownStyle=ComboBoxStyle.DropDownList,Width=55};
  public ComboBox Join {get;}=new(){DropDownStyle=ComboBoxStyle.DropDownList,Width=65};
  public Button Remove {get;}=new(){Text="削除",Width=55,Height=25};
- public SavedFilter Saved=>new(new(column.Selection,op.Text,value.Text,type.Text,upper.Text),Join.Text);
+ string ValueType=>definitions.FirstOrDefault(c=>c.Name==column.Selection)?.Numeric==true?"数値":"文字列";
+ public SavedFilter Saved=>new(new(column.Selection,op.Text,value.Text,ValueType,upper.Text),Join.Text);
  public void Restore(SavedFilter saved){pendingColumn=saved.Filter.Column;column.SelectedItem=pendingColumn;op.SelectedItem=saved.Filter.Operator;value.Text=saved.Filter.Value;upper.Text=saved.Filter.Upper;Join.SelectedItem=saved.Join;}
- public TableFilter? Condition=>column.SelectedItem is not string name||name.Length==0?null:new(name,op.Text,value.Text,type.Text,upper.Text);
+ public TableFilter? Condition=>column.SelectedItem is not string name||name.Length==0?null:new(name,op.Text,value.Text,ValueType,upper.Text);
  public void BindColumns(TableColumn[] columns){var previous=column.Selection.Length>0?column.Selection:pendingColumn;definitions=columns;column.Items.Clear();column.Items.Add("");column.Items.AddRange(columns.Select(c=>c.Name).ToArray());column.SelectedItem=column.Items.Contains(previous)?previous:"";pendingColumn="";}
  public FilterRow() {
  Width=850;Height=28;WrapContents=false;Margin=new Padding(3);
@@ -276,11 +301,11 @@ class FilterRow:FlowLayoutPanel {
  Join.Items.AddRange(new object[]{"AND","OR"});Join.SelectedIndex=0;
  var joinSlot=new Panel(){Width=65,Height=25};Join.Dock=DockStyle.Fill;joinSlot.Controls.Add(Join);
  op.Items.AddRange(new object[]{"=",">=","<=","範囲"});op.SelectedIndex=0;
- type.Items.AddRange(new object[]{"文字列","数値"});type.SelectedIndex=0;type.Enabled=false;
- column.SelectedIndexChanged+=(_,_)=>type.SelectedItem=definitions.FirstOrDefault(c=>c.Name==column.Selection)?.Numeric==true?"数値":"文字列";
+ // 保存DTOのTypeは旧版との互換用。実際のパラメーター型はDB定義から決める。
+ column.SelectedIndexChanged+=(_,_)=>{var definition=definitions.FirstOrDefault(c=>c.Name==column.Selection);value.PlaceholderText=definition?.ValueType switch{"DateTime" or "DateTimeOffset"=>"yyyy-MM-dd HH:mm:ss","Boolean"=>"true / false","Guid"=>"GUID",_=>""};upper.PlaceholderText=value.PlaceholderText;};
  var upperLabel=Caption("〜",14);upper.Visible=upperLabel.Visible=false;
  op.SelectedIndexChanged+=(_,_)=>upper.Visible=upperLabel.Visible=op.Text=="範囲";
- Controls.AddRange(new Control[]{joinSlot,Caption("検索列",44),column,Caption("条件",36),op,type,Caption("値",18),value,upperLabel,upper,Remove});
+ Controls.AddRange(new Control[]{joinSlot,Caption("検索列",44),column,Caption("条件",36),op,Caption("値",18),value,upperLabel,upper,Remove});
  foreach(Control c in Controls)c.Margin=new Padding(2,1,2,0);
  }
 }
@@ -288,11 +313,12 @@ class FilterRow:FlowLayoutPanel {
 // 候補を絞り込まず、部分一致へジャンプする。編集文字は表示専用でDB識別子として使わない。
 class SearchColumnCombo:ComboBox {
  string query="";int original=-1;bool canceled;
- public string Selection=>SelectedItem as string??"";
+ public string Selection=>SelectedItem?.ToString()??"";
+ public event EventHandler? SelectionConfirmed;
  public SearchColumnCombo(){DropDownStyle=ComboBoxStyle.DropDownList;DrawMode=DrawMode.OwnerDrawFixed;IntegralHeight=false;DropDownHeight=260;AccessibleName="検索列";}
  protected override void OnDropDown(EventArgs e){original=SelectedIndex;query="";canceled=false;base.OnDropDown(e);}
- protected override void OnSelectionChangeCommitted(EventArgs e){query="";base.OnSelectionChangeCommitted(e);}
- protected override void OnDropDownClosed(EventArgs e){if(canceled||(query.Length>0&&!Selection.Contains(query,StringComparison.OrdinalIgnoreCase)))SelectedIndex=original;query="";Invalidate();base.OnDropDownClosed(e);}
+ protected override void OnSelectionChangeCommitted(EventArgs e){query="";base.OnSelectionChangeCommitted(e);if(!DroppedDown)SelectionConfirmed?.Invoke(this,e);}
+ protected override void OnDropDownClosed(EventArgs e){var confirmed=!canceled&&(query.Length==0||Selection.Contains(query,StringComparison.OrdinalIgnoreCase));if(!confirmed)SelectedIndex=original;query="";Invalidate();base.OnDropDownClosed(e);if(confirmed)SelectionConfirmed?.Invoke(this,e);}
  protected override void OnKeyPress(KeyPressEventArgs e){
  if(!char.IsControl(e.KeyChar)){if(!DroppedDown)DroppedDown=true;query+=e.KeyChar;Jump(0);e.Handled=true;Invalidate();}base.OnKeyPress(e);
  }
@@ -317,6 +343,27 @@ class SearchColumnCombo:ComboBox {
 }
 
 // 候補はDB定義から渡す。フィルターで一時的に隠れたチェックも保持し、検索のたびに選択を失わない。
+static class ComparisonDialog {
+ public static (string[]? Keys,string[] Ignored)? Choose(IWin32Window owner,CommonTable table,string[] names,string[]? keys,string[] ignored,string[] changeIgnored) {
+ using var dialog=new Form(){Text=table.Postgres.Name+" の比較設定",ClientSize=new Size(760,230),FormBorderStyle=FormBorderStyle.FixedDialog,StartPosition=FormStartPosition.CenterParent,MinimizeBox=false,MaximizeBox=false};
+ var panel=new FlowLayoutPanel(){Dock=DockStyle.Fill,FlowDirection=FlowDirection.TopDown,WrapContents=false,Padding=new Padding(12)};
+ var usePrimary=new CheckBox(){Text="主キーでDB間の行を対応付ける",AutoSize=true,Checked=keys==null&&table.KeyError==null,Enabled=table.KeyError==null};
+ var matching=keys??[];var excluded=ignored.ToArray();
+ var keyText=new TextBox(){Width=450,ReadOnly=true,AccessibleName="DB間の対応列"};var ignoredText=new TextBox(){Width=450,ReadOnly=true,AccessibleName="DB間判定の除外列"};
+ var pickKeys=new Button(){Text="列を選択",AutoSize=true};var pickIgnored=new Button(){Text="列を選択",AutoSize=true};
+ void Field(string text,TextBox input,Button button){var row=new FlowLayoutPanel(){Width=730,Height=32};row.Controls.AddRange(new Control[]{new Label(){Text=text,Width=175,Height=27,TextAlign=ContentAlignment.MiddleLeft},input,button});panel.Controls.Add(row);}
+ void Refresh(){keyText.Text=string.Join(", ",usePrimary.Checked?table.Postgres.Keys:matching);ignoredText.Text=string.Join(", ",excluded);pickKeys.Enabled=!usePrimary.Checked;}
+ pickKeys.Click+=(_,_)=>{var chosen=ElementPicker.Choose(dialog,"DB間の対応列を選択",names.Where(n=>!changeIgnored.Contains(n,StringComparer.OrdinalIgnoreCase)).ToArray(),matching);if(chosen!=null){matching=chosen;Refresh();}};
+ pickIgnored.Click+=(_,_)=>{var chosen=ElementPicker.Choose(dialog,"DB間判定の除外列を選択",names,excluded);if(chosen!=null){excluded=chosen;Refresh();}};
+ usePrimary.CheckedChanged+=(_,_)=>Refresh();panel.Controls.Add(usePrimary);Field("DB間の対応列",keyText,pickKeys);Field("DB間判定の除外列",ignoredText,pickIgnored);
+ panel.Controls.Add(new Label(){Text="対応列は、両DBで同じ行を表す一意な値を選びます。複数列も指定できます。\n主キーがないDBでは操作前後の識別にも使います。採番IDは判定除外へ指定できます。",AutoSize=true,MaximumSize=new Size(725,0)});
+ var message=new Label(){AutoSize=true,MaximumSize=new Size(725,0)};panel.Controls.Add(message);
+ var buttons=new FlowLayoutPanel(){Dock=DockStyle.Bottom,Height=38,FlowDirection=FlowDirection.RightToLeft};var cancel=new Button(){Text="キャンセル",AutoSize=true,DialogResult=DialogResult.Cancel};var ok=new Button(){Text="決定",AutoSize=true};
+ ok.Click+=(_,_)=>{try{table.Specs(changeIgnored,null,usePrimary.Checked?null:matching,excluded);dialog.DialogResult=DialogResult.OK;}catch(ComparisonConfigurationException e){message.Text=e.Message;}};
+ buttons.Controls.AddRange(new Control[]{cancel,ok});dialog.Controls.Add(panel);dialog.Controls.Add(buttons);dialog.AcceptButton=ok;dialog.CancelButton=cancel;Refresh();
+ return dialog.ShowDialog(owner)==DialogResult.OK?(usePrimary.Checked?null:matching,excluded):null;
+ }
+}
 static class ElementPicker {
  public static string[]? Choose(IWin32Window owner,string title,string[] names,string[] selected,bool multiple=true) {
  using var dialog=new Form(){Text=title,Width=620,Height=460,StartPosition=FormStartPosition.CenterParent,MinimizeBox=false,MaximizeBox=false};

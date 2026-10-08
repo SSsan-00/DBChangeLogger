@@ -23,7 +23,7 @@ public class TableCatalogTests {
  [TestMethod]
  public void Specs_RejectMissingOrDifferentPrimaryKeys() {
   foreach(var table in new[]{new CommonTable(new("x",[]),new("x",["id"])),new CommonTable(new("x",["id"]),new("x",["other"]))}) {
-   Assert.IsNotNull(table.KeyError);Assert.ThrowsExactly<InvalidOperationException>(()=>table.Specs([],null));
+   Assert.IsNotNull(table.KeyError);Assert.ThrowsExactly<ComparisonConfigurationException>(()=>table.Specs([],null));
   }
  }
  [TestMethod]

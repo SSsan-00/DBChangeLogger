@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.Text.Json;
 using System.Data.Common;
 using DbEvidence;
@@ -11,6 +12,59 @@ namespace DbEvidenceTests;
 public sealed class LargeTableTests
 {
     public TestContext TestContext { get; set; } = null!;
+
+    [TestMethod,TestCategory("Performance")]
+    public void MeasureCurrentComparisonAndWideExport()
+    {
+        var reportPath=Environment.GetEnvironmentVariable("EVIDENCE_TUNING_REPORT");
+        if(reportPath is null)Assert.Inconclusive("改善前後を同じ条件で測るときだけ実行します。");
+        var measurements=new List<object>();
+        var signatures=new Dictionary<string,string>();
+        string Hash(string text)=>Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(text)));
+        void Measure(string name,Func<string> work)
+        {
+            signatures[name]=Hash(work()); // JITの初回実行を計測に含めない。
+            var times=new List<double>();var allocations=new List<long>();
+            for(var i=0;i<3;i++) {
+                GC.Collect();GC.WaitForPendingFinalizers();GC.Collect();
+                var allocated=GC.GetTotalAllocatedBytes(true);var watch=Stopwatch.StartNew();
+                var output=work();watch.Stop();var bytes=GC.GetTotalAllocatedBytes(true)-allocated;
+                Assert.AreEqual(signatures[name],Hash(output),"反復実行で結果が変わらないこと。");
+                times.Add(watch.Elapsed.TotalMilliseconds);allocations.Add(bytes);
+            }
+            measurements.Add(new{Name=name,Milliseconds=times.Order().ElementAt(1),AllocatedBytes=allocations.Order().ElementAt(1)});
+        }
+        foreach(var (name,count,width,stride) in new[]{("sparse",300_000,16,1000),("wide",1000,300,1)}) {
+            var columns=Enumerable.Range(0,width).Select(i=>i==0?"id":"col"+i).ToArray();
+            var rows=new Dictionary<string,string?[]>(count,StringComparer.Ordinal);
+            var next=new Dictionary<string,string?[]>(count,StringComparer.Ordinal);
+            for(var i=0;i<count;i++) {
+                var id=i.ToString(CultureInfo.InvariantCulture);var key="[\""+id+"\"]";
+                var row=Enumerable.Repeat<string?>("old",width).ToArray();row[0]=id;rows.Add(key,row);
+                var after=row.ToArray();if(i%stride==0)for(var col=1;col<width;col++)after[col]="new";
+                next.Add(key,after);
+            }
+            var before=new Snapshot(columns,rows,DateTimeOffset.UnixEpoch);var afterSnapshot=before with{Rows=next};
+            var spec=new TableSpec("public",name,["id"],[]);
+            // 比較結果のシリアライズ時間も双方に含む。DB取得・COUNT・Excel貼付は計測対象外。
+            Measure(name+"-compare",()=>JsonSerializer.Serialize(Engine.Compare(before,afterSnapshot,before,afterSnapshot,spec)));
+            if(name=="wide") {
+                var changes=Engine.Compare(before,afterSnapshot,before,afterSnapshot,spec);
+                Measure("wide-export",()=>Engine.Render(columns,changes,spec,before,afterSnapshot,before,afterSnapshot,true).SpreadsheetXml);
+            }
+        }
+        foreach(var d in new[]{DemoEvidence.Create(),DemoEvidence.CreateSingleUpdate()}.Concat(DemoEvidence.CreateMultiple())) {
+            var changes=Engine.Compare(d.PgBefore,d.PgAfter,d.SqlBefore,d.SqlAfter,d.Spec);
+            var output=Engine.Render(d.PgBefore.Columns,changes,d.Spec,d.PgBefore,d.PgAfter,d.SqlBefore,d.SqlAfter);
+            signatures["demo-"+signatures.Count]=Hash(output.Html+"\0"+output.Text+"\0"+output.SpreadsheetXml);
+        }
+        File.WriteAllText(reportPath,JsonSerializer.Serialize(new{Measurements=measurements,Signatures=signatures},new JsonSerializerOptions{WriteIndented=true}));
+        if(Environment.GetEnvironmentVariable("EVIDENCE_TUNING_BASELINE") is {} baseline) {
+            using var original=JsonDocument.Parse(File.ReadAllText(baseline));
+            foreach(var (key,value) in signatures)Assert.AreEqual(original.RootElement.GetProperty("Signatures").GetProperty(key).GetString(),value,key+"の出力が改善前と完全一致すること。");
+        }
+        TestContext.WriteLine(File.ReadAllText(reportPath));
+    }
 
     [TestMethod]
     public void OptimizedComparisonMatchesOriginalForMixedChangesAndColumnOrders()
