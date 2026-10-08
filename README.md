@@ -28,7 +28,7 @@ GitHubの公開Releaseは**DB接続なしの確認用ビルド**です。通常�
 3. PowerShellでソースフォルダーを開き、`./Publish.ps1` を実行します。設定を検証・暗号化してからWindowsアプリと配布ZIPを作ります。接続文字列をコマンド引数へ渡す必要はありません。
 4. `artifacts/DBChangeLogger-Windows-x64.zip` を共有します。利用者は展開し `DBChangeLogger.exe` を起動するだけです。接続設定の手入力や管理者権限によるインストールは不要です。
 
-配布物は `DBChangeLogger.exe`、`Microsoft.Data.SqlClient.SNI.dll`、`connections.enc`、説明書です。設定ファイルを単体で失わないよう、フォルダー全体を配布してください。設定未入力・形式不正なら配布処理は失敗します。既存ZIPは更新されないので、以前のZIPを誤って配らないよう成功メッセージを確認してください。
+実行用ZIPには `DBChangeLogger.exe`、`Microsoft.Data.SqlClient.SNI.dll`、`connections.enc` の3ファイルだけを収録します。確認用ZIPは接続設定を除いた2ファイルです。説明書などのMarkdownは実行用ZIPへ同梱せず、GitHubまたはソースZIPで参照します。設定ファイルを単体で失わないよう、フォルダー全体を配布してください。設定未入力・形式不正なら配布処理は失敗します。既存ZIPは更新されないので、以前のZIPを誤って配らないよう成功メッセージを確認してください。
 
 接続情報未入力で画面だけを確認する場合は `./Publish.ps1 -DemoOnly` を使い、`DBChangeLogger.exe --demo` で起動します。このZIPには接続設定がありません。通常起動では設定不足を表示し取得を無効にします。
 

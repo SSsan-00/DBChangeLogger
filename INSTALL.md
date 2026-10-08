@@ -101,9 +101,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\Publish.ps1
 | DBChangeLogger.exe | アプリ本体、.NETランタイム同梱 |
 | Microsoft.Data.SqlClient.SNI.dll | SQL Server接続に必要なDLL |
 | connections.enc | 暗号化した接続設定。社内配布版のみ |
-| README.md / INSTALL.md など | 利用手順・仕様・検証記録 |
 
-EXEだけでなく、ZIPの内容をまとめて渡してください。接続先を変更するときも、`.local.cs` を編集して再度ビルドし、更新したZIPを渡します。ビルド失敗時は以前のZIPが残るため、成功メッセージを確認してください。
+実行用ZIPには上記の実行関連ファイルだけを同梱します。説明書・仕様・検証記録はGitHubまたはソースZIPで参照してください。EXEだけでなく、ZIPの内容をまとめて渡してください。接続先を変更するときも、`.local.cs` を編集して再度ビルドし、更新したZIPを渡します。ビルド失敗時は以前のZIPが残るため、成功メッセージを確認してください。
 
 ### 公開用ビルドを作る場合
 
