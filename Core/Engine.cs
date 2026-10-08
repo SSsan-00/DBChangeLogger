@@ -108,6 +108,7 @@ public static class Engine {
  return(changes.ToArray(),bestIndex<0?null:before.Columns[beforeMap[bestIndex]]);
  }
  static int[] SortKeys(Change[] pg,Change[] sql,int[] active,int[] preferred,CancellationToken token) {
+  if(pg.Length<=1&&sql.Length<=1)return [];
   string?[] Row(Change c)=>c.After??c.Before!;
   var all=pg.Concat(sql).ToArray();
   var ranked=active.Select(index=>{
@@ -122,7 +123,7 @@ public static class Engine {
   var distinct=Distinct(pg,[])+Distinct(sql,[]);
   // ponytail: 変更行だけを貪欲に調べる。最小の複合キーの総当たり探索は行わず、同値なら全取得値で順番を固定する。
   foreach(var candidate in ranked){var next=keys.Append(candidate.Index).ToArray();var count=Distinct(pg,next)+Distinct(sql,next);
-   if(count>distinct){keys.Add(candidate.Index);distinct=count;}if(distinct==all.Length)break;}
+   if(count>distinct){keys.Add(candidate.Index);distinct=count;}if(distinct==all.Length||keys.Count==3)break;}
   if(keys.Count==0&&ranked.Length>0)keys.Add(ranked[0].Index);
   return keys.ToArray();
  }
@@ -293,6 +294,7 @@ public static class Engine {
  var p=pgKeyless?pk.Changes:candidates.Order(StringComparer.Ordinal).Select(k=>Get(k,pb,pa,identity,pm,true,pgAfterAligned)).ToArray();
  var s=sqlKeyless?sk.Changes:sqlCandidates.Order(StringComparer.Ordinal).Select(k=>Get(k,sb,sa,bm,sm,sqlBeforeAligned,sqlAfterAligned)).ToArray();
  var sort=SortKeys(p,s,active,stable,cancellationToken);var sortNames=sort.Select(i=>columns[i]).ToArray();
+ if(p.Length>1||s.Length>1) {
  var definitions=columns.Select(n=>(spec.Definition??[]).FirstOrDefault(c=>string.Equals(c.Name,n,StringComparison.OrdinalIgnoreCase))).ToArray();
  int CompareRows(Change a,Change b){cancellationToken.ThrowIfCancellationRequested();var ar=a.After??a.Before!;var br=b.After??b.Before!;
   foreach(var i in sort){var value=CompareSortValue(ar[i],br[i],definitions[i]);if(value!=0)return value;}
@@ -301,6 +303,7 @@ public static class Engine {
   foreach(var i in active){var value=CompareSortValue(ar[i],br[i],definitions[i]);if(value!=0)return value;var exact=StringComparer.Ordinal.Compare(ar[i],br[i]);if(exact!=0)return exact;}return 0;
  }
  try{Array.Sort(p,CompareRows);Array.Sort(s,CompareRows);}catch(InvalidOperationException) when(cancellationToken.IsCancellationRequested){throw new OperationCanceledException(cancellationToken);}
+ }
  var missing=new Change("","変更なし",null,null,[]);
  for(var i=0;i<Math.Max(p.Length,s.Length);i++) {
  cancellationToken.ThrowIfCancellationRequested();var pg=i<p.Length?p[i]:missing;var sql=i<s.Length?s[i]:missing;
@@ -341,8 +344,9 @@ public static class Engine {
  static string Visible(string? value) => value==null?"〈NULL〉":value.Length==0?"〈空文字〉":value.Replace("\r","\\r").Replace("\n","\\n").Replace("\t","\\t");
  public static (string Html,string Text,string SpreadsheetXml) Render(string[] columns,List<Evidence> evidence,TableSpec spec,Snapshot pb,Snapshot pa,Snapshot sb,Snapshot sa,bool spreadsheetOnly=false,CancellationToken cancellationToken=default) {
  var pgCount=evidence.Count(e=>e.Pg.Operation!="変更なし");var sqlCount=evidence.Count(e=>e.Sql.Operation!="変更なし");
+ var sortColumns=spec.AutoMatch&&spec.MatchKeys==null?evidence.FirstOrDefault()?.SortColumns:null;
  var dataRows=evidence.Count==0?0:(long)Math.Max(1,pgCount)+Math.Max(1,sqlCount);
- if(dataRows+3+(spec.Ignored.Length>0?1:0)+(spec.Columns is {Length:>0}?1:0)+(spec.MatchKeys is {Length:>0}?1:0)+(spec.ComparisonIgnored is {Length:>0}?1:0)+(spec.AutoMatch&&spec.MatchKeys==null?1:0)>1048576||columns.Length+2>16384)throw new InvalidOperationException(ExcelLimitError);
+ if(dataRows+3+(spec.Ignored.Length>0?1:0)+(spec.Columns is {Length:>0}?1:0)+(spec.MatchKeys is {Length:>0}?1:0)+(spec.ComparisonIgnored is {Length:>0}?1:0)+(sortColumns is {Length:>0}?1:0)>1048576||columns.Length+2>16384)throw new InvalidOperationException(ExcelLimitError);
  // Excelの推測による日付・数値・数式への変換を防ぐため、DataのString型と書式@を両方維持する。
  // ここに追加した上部の行は、直前のExcel行数上限チェックにも反映する。
  XNamespace ss="urn:schemas-microsoft-com:office:spreadsheet";
@@ -372,7 +376,7 @@ public static class Engine {
  Row(new[]{($"対象: {spec.Name}"+condition,"#ffffff")});
  if(spec.Columns is {Length:>0})Row(new[]{("取得列: "+string.Join(", ",columns),"#ffffff")});
  if(spec.Ignored.Length>0)Row(new[]{("除外列: "+string.Join(", ",spec.Ignored),"#ffffff")});
- if(spec.AutoMatch&&spec.MatchKeys==null)Row(new[]{("ソート: "+string.Join(" → ",evidence.FirstOrDefault()?.SortColumns??[]),"#ffffff")});
+ if(sortColumns is {Length:>0})Row(new[]{("ソート: "+string.Join(" → ",sortColumns),"#ffffff")});
  if(spec.MatchKeys is {Length:>0})Row(new[]{("DB間の対応列: "+string.Join(", ",spec.MatchKeys)+(spec.BusinessIdentity?"（操作前後の識別にも使用）":""),"#ffffff")});
  if(spec.ComparisonIgnored is {Length:>0})Row(new[]{("DB間判定の除外列: "+string.Join(", ",spec.ComparisonIgnored),"#ffffff")});
  Row(new[]{"DB","操作"}.Concat(columns).Select(c=>(c,"#d9e2f3")));

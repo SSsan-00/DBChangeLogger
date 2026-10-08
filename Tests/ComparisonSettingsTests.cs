@@ -71,6 +71,23 @@ public class ComparisonSettingsTests {
  }
 
  [TestMethod]
+ public void AutomaticSortingSkipsSingleRowsAndCapsWideTableKeysAtThree() {
+  var spec=Spec with{MatchKeys=null,ComparisonIgnored=null,AutoMatch=true};
+  var pb=Snap(["1","A","1","name","10","0"]);var pa=Snap(["1","A","1","name","20","0"]);
+  var sb=Snap(["99","A","1","name","10","0"]);var sa=Snap(["99","A","1","name","21","0"]);
+  var single=Engine.Compare(pb,pa,sb,sa,spec).Single();Assert.AreEqual(0,single.SortColumns!.Length);CollectionAssert.AreEqual(new[]{0,4},single.Different);
+  foreach(var (p0,p1,s0,s1) in new[]{(pb,pa,sb,sa),(pb,pa,sb,sb),(pb,pb,sb,sa),(pb,pb,sb,sb)}) {
+   Assert.IsTrue(Engine.Compare(p0,p1,s0,s1,spec).All(c=>c.SortColumns!.Length==0));
+   Assert.IsFalse(Render(p0,p1,s0,s1,spec).Any(r=>Values(r)[0].StartsWith("ソート:")));
+  }
+  var columns=Enumerable.Range(0,400).Select(i=>"col"+i).ToArray();var wide=new TableSpec("public","wide",[],[],AutoMatch:true,Definition:columns.Select(n=>new TableColumn(n,"Int32","integer")).ToArray());
+  string?[][] Rows(string amount)=>Enumerable.Range(0,16).Select(i=>Enumerable.Range(0,400).Select(c=>c<4?((i>>c)&1).ToString():c==4?amount:null).ToArray()).ToArray();
+  var before=Heap(columns,Rows("0"));var after=Heap(columns,Rows("1"));var reversed=Heap(columns,Rows("1").Reverse().ToArray());
+  var result=Engine.Compare(before,after,before,reversed,wide);Assert.AreEqual(16,result.Count);Assert.IsTrue(result.All(c=>c.Match));
+  CollectionAssert.AreEqual(new[]{"col0","col1","col2"},result[0].SortColumns!);
+  Assert.AreEqual("ソート: col0 → col1 → col2",Values(Render(before,after,before,reversed,wide)[1])[0]);
+ }
+ [TestMethod]
  public void AutomaticSortSelectsSingleAndCompositeKeysAndComparesPositions() {
   var columns=new[]{"id","order","line","amount","date"};
   var spec=new TableSpec("public","x",["id"],[],AutoMatch:true,Definition:[new("id","Int32","integer"),new("order","String","text"),new("line","Int32","integer"),new("amount","Decimal","numeric"),new("date","DateTime","date")]);
