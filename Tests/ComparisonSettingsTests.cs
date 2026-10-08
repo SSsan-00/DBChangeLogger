@@ -42,7 +42,7 @@ public class ComparisonSettingsTests {
   var result=Engine.Compare(pb,pa,sb,sa,spec);Assert.AreEqual(2,result.Count);Assert.IsTrue(result.All(c=>c.Pg.Operation=="更新"&&c.Sql.Operation=="更新"&&c.Different.SequenceEqual(new[]{0,3})));
   Assert.IsTrue(result.All(c=>c.Pg.After![1]==c.Sql.After![1]));
   var rows=Render(pb,pa,sb,sa,spec);CollectionAssert.AreEqual(new[]{"判定","","×","◯","◯","×"},Values(rows[^1]));
-  Assert.IsTrue(Values(rows[1])[0].Contains("id"));
+  Assert.AreEqual("ソート: code",Values(rows[1])[0]);
   var sqlSpec=spec with{Keys=["id"]};var mixed=spec.WithAutomaticMetadata(sqlSpec);
   Snapshot Primary(Snapshot snapshot)=>snapshot with{Keyless=false,Rows=snapshot.Rows.Values.ToDictionary(r=>JsonSerializer.Serialize(new[]{r[0]}),r=>r)};
   Assert.IsTrue(Engine.Compare(pb,pa,Primary(sb),Primary(sa),mixed).All(c=>c.Pg.Operation=="更新"&&c.Different.SequenceEqual(new[]{0,3})&&c.Sql.Before![0]==c.Sql.After![0]));
@@ -51,25 +51,49 @@ public class ComparisonSettingsTests {
  }
 
  [TestMethod]
- public void KeylessAmbiguousUpdatesShowOnlyFinalRowsAndRejectAllColumns() {
+ public void KeylessAmbiguousUpdatesCompareSortedFinalRows() {
   var columns=new[]{"id","name","amount"};var spec=new TableSpec("public","heap",[],[],AutoMatch:true,Definition:[new("id","Int32","integer"),new("name","String","text"),new("amount","Int32","integer")]);
   var pb=Heap(columns,["1","A","10"],["2","B","10"]);var pa=Heap(columns,["1","B","20"],["2","A","20"]);
-  var result=Engine.Compare(pb,pa,pb,pa,spec);Assert.AreEqual(2,result.Count);Assert.IsTrue(result.All(c=>!c.Match&&c.Different.Length==3));
+  var result=Engine.Compare(pb,pa,pb,pa,spec);Assert.AreEqual(2,result.Count);Assert.IsTrue(result.All(c=>c.Match&&c.Different.Length==0));
   Assert.IsTrue(result.All(c=>c.Pg.Operation=="更新"&&c.Sql.Operation=="更新"&&c.Pg.Before==null&&c.Pg.Uncertain));
   CollectionAssert.AreEqual(pa.Rows.Values.Select(r=>string.Join("/",r)).ToArray(),result.Select(c=>string.Join("/",c.Pg.After!)).ToArray());
   var duplicate=Heap(columns,[null,"A","10"],[null,"A","10"]);var updated=Heap(columns,[null,"A","20"],[null,"A","20"]);
   Assert.AreEqual(2,Engine.Compare(duplicate,updated,duplicate,updated,spec).Count);
-  Assert.IsTrue(Engine.Compare(duplicate,updated,duplicate,updated,spec).All(c=>!c.Match));
-  Assert.IsTrue(Values(Render(pb,pa,pb,pa,spec)[^1]).Skip(2).All(v=>v=="×"));
+  Assert.IsTrue(Engine.Compare(duplicate,updated,duplicate,updated,spec).All(c=>c.Match));
+  Assert.IsTrue(Values(Render(pb,pa,pb,pa,spec)[^1]).Skip(2).All(v=>v=="◯"));
   var rows=Render(pb,pa,pb,pa,spec);Assert.AreEqual(8,rows.Length);
   Assert.IsTrue(rows.Skip(3).Take(4).All(r=>Values(r)[1]=="更新"&&r.Elements(Ss+"Cell").Skip(2).All(c=>(string?)c.Attribute(Ss+"StyleID")=="Cfff2cc")));
   var more=Heap(columns,[null,"A","20"],[null,"A","20"],[null,"A","20"]);
   CollectionAssert.AreEquivalent(new[]{"更新","更新","追加"},Engine.Compare(duplicate,more,duplicate,more,spec).Select(c=>c.Pg.Operation).ToArray());
   CollectionAssert.AreEquivalent(new[]{"更新","更新","削除"},Engine.Compare(more,duplicate,more,duplicate,spec).Select(c=>c.Pg.Operation).ToArray());
   var allChanged=Heap(columns,["8","X","30"],["9","Y","40"]);
-  Assert.IsTrue(Engine.Compare(pb,allChanged,pb,allChanged,spec).All(c=>c.Pg.Operation=="更新"&&!c.Match));
+  Assert.IsTrue(Engine.Compare(pb,allChanged,pb,allChanged,spec).All(c=>c.Pg.Operation=="更新"&&c.Match));
  }
 
+ [TestMethod]
+ public void AutomaticSortSelectsSingleAndCompositeKeysAndComparesPositions() {
+  var columns=new[]{"id","order","line","amount","date"};
+  var spec=new TableSpec("public","x",["id"],[],AutoMatch:true,Definition:[new("id","Int32","integer"),new("order","String","text"),new("line","Int32","integer"),new("amount","Decimal","numeric"),new("date","DateTime","date")]);
+  Snapshot Rows(params string?[][] rows)=>new(columns,rows.ToDictionary(r=>r[0]!,r=>r),DateTimeOffset.UnixEpoch);
+  var pb=Rows(["1","A","10","1","2026-01-01"],["2","B","2","1","2026-01-01"],["3","A","2","1","2026-01-01"],["4","B","10","1","2026-01-01"]);
+  var pa=pb with{Rows=pb.Rows.ToDictionary(r=>r.Key,r=>new[]{r.Value[0],r.Value[1],r.Value[2],"2","2026-02-01"})};
+  var sb=Rows(["98","B","10","1","2026-01-02"],["99","A","2","1","2026-01-02"],["96","B","2","1","2026-01-02"],["97","A","10","1","2026-01-02"]);
+  var sa=sb with{Rows=sb.Rows.ToDictionary(r=>r.Key,r=>new[]{r.Value[0],r.Value[1],r.Value[2],r.Value[1]=="B"&&r.Value[2]=="10"?"9":"2","2026-02-02"})};
+  var result=Engine.Compare(pb,pa,sb,sa,spec);
+  CollectionAssert.AreEqual(new[]{"order","line"},result[0].SortColumns!);
+  CollectionAssert.AreEqual(new[]{"A/2","A/10","B/2","B/10"},result.Select(c=>c.Pg.After![1]+"/"+c.Pg.After[2]).ToArray());
+  Assert.IsTrue(result.Take(3).All(c=>c.Different.SequenceEqual(new[]{0,4})));CollectionAssert.AreEqual(new[]{0,3,4},result[^1].Different);
+  Assert.AreEqual("ソート: order → line",Values(Render(pb,pa,sb,sa,spec)[1])[0]);
+  var single=spec with{Definition=[new("line","Int32","integer")],Ignored=["order","amount","date"]};
+  var p=Rows(["1","", "10","1",""],["2","",null,"1",""],["3","","2","1",""]);
+  var s=Rows(["98","","2","1",""],["99","","10","1",""],["97","",null,"1",""]);
+  var sorted=Engine.Compare(Rows(),p,Rows(),s,single);
+  CollectionAssert.AreEqual(new[]{"line"},sorted[0].SortColumns!);CollectionAssert.AreEqual(new string?[]{null,"2","10"},sorted.Select(c=>c.Pg.After![2]).ToArray());
+  var strings=single with{Ignored=["line","amount","date"],Definition=[new("order","String","text")]};
+  var text=Rows(["1","A","","",""],["2","","","",""],["3",null,"","",""]);
+  CollectionAssert.AreEqual(new string?[]{null,"","A"},Engine.Compare(Rows(),text,Rows(),text,strings).Select(c=>c.Pg.After![1]).ToArray());
+  Assert.ThrowsExactly<OperationCanceledException>(()=>Engine.Compare(pb,pa,sb,sa,spec,new CancellationToken(true)));
+ }
  [TestMethod]
  public void AutomaticMatchingKeepsSequenceAndDateDifferencesInJudgment() {
   var columns=new[]{"id","name","amount","registered","version"};
@@ -84,24 +108,24 @@ public class ComparisonSettingsTests {
   var rows=XDocument.Parse(Engine.Render(columns,changes,p,pb,pa,sb,sa,true).SpreadsheetXml).Descendants(Ss+"Row").ToArray();
   CollectionAssert.AreEqual(new[]{"判定","","×","◯","◯","×","×"},Values(rows[^1]));
   Assert.AreEqual("Cffc7ce",(string?)rows[^1].Elements(Ss+"Cell").ElementAt(2).Attribute(Ss+"StyleID"));
-  Assert.IsTrue(Values(rows[1])[0].Contains("registered, version"));
+  Assert.AreEqual("ソート: name",Values(rows[1])[0]);
   var reversed=sa with{Columns=columns.Reverse().ToArray(),Rows=sa.Rows.ToDictionary(r=>r.Key,r=>r.Value.Reverse().ToArray())};
   CollectionAssert.AreEqual(changes[0].Different,Engine.Compare(pb,pa,sb,reversed,p)[0].Different);
   Assert.ThrowsExactly<OperationCanceledException>(()=>Engine.Compare(pb,pa,sb,sa,p,new CancellationToken(true)));
  }
 
  [TestMethod]
- public void AutomaticMatchingRejectsAmbiguityAndMissingOrInsufficientValues() {
+ public void AutomaticSortingComparesDuplicateNullAndFallbackValuesByColumn() {
   var spec=Spec with{MatchKeys=null,ComparisonIgnored=null,AutoMatch=true};
   var pb=Snap(["1","A","1","same","10","0"],["2","A","1","same","10","0"]);
   var pa=Snap(["1","A","1","same","20","0"],["2","A","1","same","20","0"]);
   var sb=Snap(["98","A","1","same","10","0"],["99","A","1","same","10","0"]);
   var sa=Snap(["98","A","1","same","20","0"],["99","A","1","same","20","0"]);
-  var result=Engine.Compare(pb,pa,sb,sa,spec);Assert.AreEqual(2,result.Count);Assert.IsTrue(result.All(c=>!c.Match&&c.Different.SequenceEqual(new[]{0,1,2,3,4})));
+  var result=Engine.Compare(pb,pa,sb,sa,spec);Assert.AreEqual(2,result.Count);Assert.IsTrue(result.All(c=>!c.Match&&c.Different.SequenceEqual(new[]{0})));
   sa.Rows["[\"99\"]"][4]="21";Assert.IsTrue(Engine.Compare(pb,pa,sb,sa,spec).All(c=>!c.Match));
   Assert.IsTrue(Engine.Compare(pb,pa,sb,sb,spec).All(c=>!c.Match&&c.Sql.Operation=="変更なし"));
   Assert.IsTrue(Values(Render(pb,pa,sb,sb,spec)[^1]).Skip(2).All(v=>v=="×"));
-  var noMaterial=spec with{AutoMatchExcluded=Columns};Assert.IsTrue(Engine.Compare(Snap(),pa,Snap(),sa,noMaterial).All(c=>!c.Match));
+  var noMaterial=spec with{AutoMatchExcluded=Columns};var fallback=Engine.Compare(Snap(),pa,Snap(),sa,noMaterial);Assert.IsTrue(fallback.All(c=>!c.Match));CollectionAssert.AreEquivalent(new[]{0,4},fallback.SelectMany(c=>c.Different).Distinct().ToArray());
   var nulls=Snap(["1",null,null,null,null,"0"]);var nullOther=Snap(["9",null,null,null,null,"0"]);
   Assert.IsTrue(Engine.Compare(Snap(),nulls,Snap(),nullOther,spec).All(c=>!c.Match));
  }
@@ -115,6 +139,7 @@ public class ComparisonSettingsTests {
    if(change.Pg.Operation=="削除")Assert.IsTrue(Render(pb,pa,sb,sa,spec).Where(r=>Values(r).ElementAtOrDefault(1)=="削除").All(r=>Values(r).Skip(2).All(v=>v=="〈行なし〉")));
   }
   Assert.IsTrue(Engine.Compare(pg,Snap(),Snap(),sql,spec).All(c=>!c.Match&&c.Different.Length==5));
+  Assert.IsFalse(Engine.Compare(pg,Snap(),Snap(),sql,spec with{Ignored=Columns}).Single().Match);
   Assert.IsTrue(Engine.Compare(pg,Snap(),pg,Snap(),spec).Single().Match);
   Assert.IsTrue(Engine.Compare(Snap(),pg,Snap(),pg,spec).Single().Match);
  }
@@ -267,7 +292,7 @@ public class ComparisonSettingsTests {
    CollectionAssert.AreEqual(new[]{"[\"99\"]","[\"98\"]"},result.Select(c=>c.Sql.Key).ToArray());
    foreach(var p in new[]{true,false})await Execute(p,$"UPDATE {(p?"public.":"dbo.")}{name} SET name='SAME',amount=40;");
    var ambiguous=await Engine.CapturePair(pg,sql,pSpec,sSpec,before.Pg,before.Sql);
-   Assert.IsTrue(Engine.Compare(before.Pg,ambiguous.Pg,before.Sql,ambiguous.Sql,pSpec).All(c=>c.Different.Length==5));
+   Assert.IsTrue(Engine.Compare(before.Pg,ambiguous.Pg,before.Sql,ambiguous.Sql,pSpec).All(c=>c.Different.SequenceEqual(new[]{0,3,4})));
    foreach(var p in new[]{true,false})await Execute(p,$"DELETE FROM {(p?"public.":"dbo.")}{name};");
    var deleted=await Engine.CapturePair(pg,sql,pSpec,sSpec);
    Assert.IsTrue(Engine.Compare(after.Pg,deleted.Pg,after.Sql,deleted.Sql,pSpec).All(c=>c.Pg.Operation=="削除"&&c.Different.SequenceEqual(new[]{0,3,4})));

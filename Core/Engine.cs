@@ -20,7 +20,7 @@ public record TableFilter(string Column,string Operator,string Value,string Type
 // 取得後は行配列も辞書も変更しない。同値の行を操作前後で共有し、参照一致で比較を省略するため。
 public record Snapshot(string[] Columns, Dictionary<string,string?[]> Rows, DateTimeOffset At,bool Keyless=false);
 public record Change(string Key, string Operation, string?[]? Before, string?[]? After, int[] Changed,bool Uncertain=false);
-public record Evidence(string Key, Change Pg, Change Sql, bool Match, int[] Different,string[]? InferredIdentity=null);
+public record Evidence(string Key, Change Pg, Change Sql, bool Match, int[] Different,string[]? SortColumns=null);
 public static class Engine {
  public const string ExcelLimitError="Excelの上限（1セル32,767文字、1,048,576行、16,384列）を超えるため、エビデンスをコピーできません。対象を絞ってください。";
  static string Q(string s, bool pg) => pg ? "\""+s.Replace("\"","\"\"")+"\"" : "["+s.Replace("]","]]")+"]";
@@ -102,10 +102,40 @@ public static class Engine {
   var remainingBefore=removed.Where(r=>best==null||!best.ContainsKey(r.Key)).ToArray();
   var remainingAfter=added.Where(r=>!used.Contains(r.Key)).ToArray();var updates=Math.Min(remainingBefore.Length,remainingAfter.Length);
   // ponytail: 主キーなしでは更新と削除＋再追加を区別できない。件数の重なる分は更新表示とし、履歴が必要ならDB側の変更記録を使う。
-  // 不明な更新前の値は割り当てない。更新後の行だけを出力し、全対象セルを黄色・判定を×にする。
+  // 不明な更新前の値は割り当てない。更新後の行だけを出力し、全対象セルを黄色にする。DB間判定は別途ソート後の値で行う。
   for(var i=0;i<remainingAfter.Length;i++){token.ThrowIfCancellationRequested();var (key,row)=remainingAfter[i];changes.Add(new("after:"+key,i<updates?"更新":"追加",null,row,active,updates>0));}
   foreach(var (key,row) in remainingBefore.Skip(updates)){token.ThrowIfCancellationRequested();changes.Add(new("before:"+key,"削除",row,null,active,updates>0));}
-  return(changes.ToArray(),bestIndex<0?null:before.Columns[beforeMap[bestIndex]]);
+ return(changes.ToArray(),bestIndex<0?null:before.Columns[beforeMap[bestIndex]]);
+ }
+ static int[] SortKeys(Change[] pg,Change[] sql,int[] active,int[] preferred,CancellationToken token) {
+  string?[] Row(Change c)=>c.After??c.Before!;
+  var all=pg.Concat(sql).ToArray();
+  var ranked=active.Select(index=>{
+   token.ThrowIfCancellationRequested();
+   Dictionary<string,int> Counts(Change[] changes){var counts=new Dictionary<string,int>(StringComparer.Ordinal);foreach(var c in changes){token.ThrowIfCancellationRequested();if(Row(c)[index] is {} v)counts[v]=counts.GetValueOrDefault(v)+1;}return counts;}
+   var p=Counts(pg);var s=Counts(sql);var known=0;var unchanged=0;foreach(var c in all){token.ThrowIfCancellationRequested();if(c.Before!=null&&c.After!=null){known++;if(c.Before[index]==c.After[index])unchanged++;}}
+   return new{Index=index,Preferred=preferred.Contains(index),Unchanged=known==0?0:(double)unchanged/known,
+    Overlap=p.Sum(pair=>Math.Min(pair.Value,s.GetValueOrDefault(pair.Key))),NonNull=p.Values.Sum()+s.Values.Sum(),Distinct=p.Count+s.Count};
+  }).OrderByDescending(c=>c.Preferred).ThenByDescending(c=>c.Unchanged).ThenByDescending(c=>c.Overlap).ThenByDescending(c=>c.NonNull).ThenByDescending(c=>c.Distinct).ThenBy(c=>c.Index).ToArray();
+  var keys=new List<int>();
+  int Distinct(Change[] changes,int[] indexes){var seen=new HashSet<string?[]>(new RowKeyComparer(indexes));foreach(var c in changes){token.ThrowIfCancellationRequested();seen.Add(Row(c));}return seen.Count;}
+  var distinct=Distinct(pg,[])+Distinct(sql,[]);
+  // ponytail: 変更行だけを貪欲に調べる。最小の複合キーの総当たり探索は行わず、同値なら全取得値で順番を固定する。
+  foreach(var candidate in ranked){var next=keys.Append(candidate.Index).ToArray();var count=Distinct(pg,next)+Distinct(sql,next);
+   if(count>distinct){keys.Add(candidate.Index);distinct=count;}if(distinct==all.Length)break;}
+  if(keys.Count==0&&ranked.Length>0)keys.Add(ranked[0].Index);
+  return keys.ToArray();
+ }
+ static int CompareSortValue(string? a,string? b,TableColumn? column) {
+  if(a==b)return 0;if(a==null)return -1;if(b==null)return 1;
+  if(a.Length==0||b.Length==0)return a.Length==0?-1:1;
+  if(column?.Numeric==true){
+   if(decimal.TryParse(a,NumberStyles.Float,CultureInfo.InvariantCulture,out var x)&&decimal.TryParse(b,NumberStyles.Float,CultureInfo.InvariantCulture,out var y))return x.CompareTo(y);
+   if(double.TryParse(a,NumberStyles.Float,CultureInfo.InvariantCulture,out var dx)&&double.TryParse(b,NumberStyles.Float,CultureInfo.InvariantCulture,out var dy))return dx.CompareTo(dy);
+  }
+  if(column?.ValueType is "DateTime" or "DateTimeOffset" or "DateOnly"&&DateTimeOffset.TryParse(a,CultureInfo.InvariantCulture,DateTimeStyles.AssumeUniversal,out var da)&&DateTimeOffset.TryParse(b,CultureInfo.InvariantCulture,DateTimeStyles.AssumeUniversal,out var db))return da.CompareTo(db);
+  if(column?.ValueType is "TimeSpan" or "TimeOnly"&&TimeSpan.TryParse(a,CultureInfo.InvariantCulture,out var ta)&&TimeSpan.TryParse(b,CultureInfo.InvariantCulture,out var tb))return ta.CompareTo(tb);
+  return StringComparer.Ordinal.Compare(a,b);
  }
  static int[] ComparisonIndexes(string[] columns,TableSpec spec) {
  var match=spec.MatchKeys??[];var excluded=spec.ComparisonIgnored??[];
@@ -262,32 +292,21 @@ public static class Engine {
  stable=stable.Where(i=>!inferred.Contains(columns[i],StringComparer.OrdinalIgnoreCase)).ToArray();
  var p=pgKeyless?pk.Changes:candidates.Order(StringComparer.Ordinal).Select(k=>Get(k,pb,pa,identity,pm,true,pgAfterAligned)).ToArray();
  var s=sqlKeyless?sk.Changes:sqlCandidates.Order(StringComparer.Ordinal).Select(k=>Get(k,sb,sa,bm,sm,sqlBeforeAligned,sqlAfterAligned)).ToArray();
- var pUsed=new HashSet<Change>();var sUsed=new HashSet<Change>();
- Dictionary<string,List<Change>> GroupAutomatic(Change[] changes) {
- var groups=new Dictionary<string,List<Change>>(StringComparer.Ordinal);
- foreach(var change in changes) {
- if(change.Uncertain)continue;
- cancellationToken.ThrowIfCancellationRequested();var row=change.After??change.Before!;
- // 照合材料なし・全NULLでは根拠がない。候補重複も後段で拒否し、任意のペアを一致にしない。
- if(stable.Length==0||stable.All(i=>row[i]==null))continue;
- var key=change.Operation+System.Text.Json.JsonSerializer.Serialize(stable.Select(i=>row[i]).ToArray());
- if(!groups.TryGetValue(key,out var list))groups.Add(key,list=[]);list.Add(change);
- }return groups;
+ var sort=SortKeys(p,s,active,stable,cancellationToken);var sortNames=sort.Select(i=>columns[i]).ToArray();
+ var definitions=columns.Select(n=>(spec.Definition??[]).FirstOrDefault(c=>string.Equals(c.Name,n,StringComparison.OrdinalIgnoreCase))).ToArray();
+ int CompareRows(Change a,Change b){cancellationToken.ThrowIfCancellationRequested();var ar=a.After??a.Before!;var br=b.After??b.Before!;
+  foreach(var i in sort){var value=CompareSortValue(ar[i],br[i],definitions[i]);if(value!=0)return value;}
+  // 同じソート値なら操作種別、全取得値で固定する。DBの返却順・内部の行番号は照合に使わない。
+  var op=StringComparer.Ordinal.Compare(a.Operation,b.Operation);if(op!=0)return op;
+  foreach(var i in active){var value=CompareSortValue(ar[i],br[i],definitions[i]);if(value!=0)return value;var exact=StringComparer.Ordinal.Compare(ar[i],br[i]);if(exact!=0)return exact;}return 0;
  }
- var pgGroups=GroupAutomatic(p);var sqlGroups=GroupAutomatic(s);
- foreach(var (key,group) in pgGroups) {
- cancellationToken.ThrowIfCancellationRequested();
- if(group.Count!=1||!sqlGroups.TryGetValue(key,out var other)||other.Count!=1)continue;
- var pg=group[0];var sql=other[0];pUsed.Add(pg);sUsed.Add(sql);
- var pr=pg.After??pg.Before!;var sr=sql.After??sql.Before!;
- var diff=judged.Where(i=>pr[i]!=sr[i]).ToArray();result.Add(new(pg.Key,pg,sql,diff.Length==0,diff,inferred));
- }
- var remainingPg=p.Where(c=>!pUsed.Contains(c)).ToArray();var remainingSql=s.Where(c=>!sUsed.Contains(c)).ToArray();
+ try{Array.Sort(p,CompareRows);Array.Sort(s,CompareRows);}catch(InvalidOperationException) when(cancellationToken.IsCancellationRequested){throw new OperationCanceledException(cancellationToken);}
  var missing=new Change("","変更なし",null,null,[]);
- // 未対応行は表示用にまとめるだけで、対応したとは解釈しない。曖昧さは全対象列×として残す。
- for(var i=0;i<Math.Max(remainingPg.Length,remainingSql.Length);i++) {
- cancellationToken.ThrowIfCancellationRequested();var pg=i<remainingPg.Length?remainingPg[i]:missing;var sql=i<remainingSql.Length?remainingSql[i]:missing;
- result.Add(new(pg.Operation=="変更なし"?sql.Key:pg.Key,pg,sql,false,judged,inferred));
+ for(var i=0;i<Math.Max(p.Length,s.Length);i++) {
+ cancellationToken.ThrowIfCancellationRequested();var pg=i<p.Length?p[i]:missing;var sql=i<s.Length?s[i]:missing;
+ var pr=pg.After??pg.Before;var sr=sql.After??sql.Before;
+ var diff=pg.Operation!=sql.Operation?judged:judged.Where(c=>pr?[c]!=sr?[c]).ToArray();
+ result.Add(new(pg.Operation=="変更なし"?sql.Key:pg.Key,pg,sql,pg.Operation==sql.Operation&&diff.Length==0,diff,sortNames));
  }
  }else if(businessMatching) {
  Dictionary<string,List<Change>> Group(HashSet<string> keys,Snapshot before,Snapshot after,int[] beforeMap,int[] afterMap,bool beforeAligned,bool afterAligned) {
@@ -353,7 +372,7 @@ public static class Engine {
  Row(new[]{($"対象: {spec.Name}"+condition,"#ffffff")});
  if(spec.Columns is {Length:>0})Row(new[]{("取得列: "+string.Join(", ",columns),"#ffffff")});
  if(spec.Ignored.Length>0)Row(new[]{("除外列: "+string.Join(", ",spec.Ignored),"#ffffff")});
- if(spec.AutoMatch&&spec.MatchKeys==null)Row(new[]{("DB間の自動対応: 同じ操作の変更行を値で照合 / 照合材料から除外: "+string.Join(", ",AutomaticMatchingExcluded(spec).Concat(evidence.SelectMany(e=>e.InferredIdentity??[])).Distinct(StringComparer.OrdinalIgnoreCase).Where(n=>columns.Contains(n,StringComparer.OrdinalIgnoreCase)))+"（値の判定は対象） / 未対応・曖昧な行は×","#ffffff")});
+ if(spec.AutoMatch&&spec.MatchKeys==null)Row(new[]{("ソート: "+string.Join(" → ",evidence.FirstOrDefault()?.SortColumns??[]),"#ffffff")});
  if(spec.MatchKeys is {Length:>0})Row(new[]{("DB間の対応列: "+string.Join(", ",spec.MatchKeys)+(spec.BusinessIdentity?"（操作前後の識別にも使用）":""),"#ffffff")});
  if(spec.ComparisonIgnored is {Length:>0})Row(new[]{("DB間判定の除外列: "+string.Join(", ",spec.ComparisonIgnored),"#ffffff")});
  Row(new[]{"DB","操作"}.Concat(columns).Select(c=>(c,"#d9e2f3")));
