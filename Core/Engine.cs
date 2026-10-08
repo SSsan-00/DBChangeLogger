@@ -18,15 +18,15 @@ public record TableSpec(string Schema, string Name, string[] Keys, string[] Igno
 public class ComparisonConfigurationException(string message):InvalidOperationException(message);
 public record TableFilter(string Column,string Operator,string Value,string Type="文字列",string Upper="");
 // 取得後は行配列も辞書も変更しない。同値の行を操作前後で共有し、参照一致で比較を省略するため。
-public record Snapshot(string[] Columns, Dictionary<string,string?[]> Rows, DateTimeOffset At);
-public record Change(string Key, string Operation, string?[]? Before, string?[]? After, int[] Changed);
-public record Evidence(string Key, Change Pg, Change Sql, bool Match, int[] Different);
+public record Snapshot(string[] Columns, Dictionary<string,string?[]> Rows, DateTimeOffset At,bool Keyless=false);
+public record Change(string Key, string Operation, string?[]? Before, string?[]? After, int[] Changed,bool Uncertain=false);
+public record Evidence(string Key, Change Pg, Change Sql, bool Match, int[] Different,string[]? InferredIdentity=null);
 public static class Engine {
  public const string ExcelLimitError="Excelの上限（1セル32,767文字、1,048,576行、16,384列）を超えるため、エビデンスをコピーできません。対象を絞ってください。";
  static string Q(string s, bool pg) => pg ? "\""+s.Replace("\"","\"\"")+"\"" : "["+s.Replace("]","]]")+"]";
  public static string? Normalize(object v) => v switch { DBNull => null, byte[] b => Convert.ToHexString(b), DateTime d => d.ToString("yyyy-MM-ddTHH:mm:ss.fffffff",CultureInfo.InvariantCulture), DateTimeOffset d => d.UtcDateTime.ToString("yyyy-MM-ddTHH:mm:ss.fffffff",CultureInfo.InvariantCulture), decimal d => d.ToString("G29",CultureInfo.InvariantCulture), IFormattable f => f.ToString(null,CultureInfo.InvariantCulture), _ => v.ToString() };
  public static async Task<Snapshot> Capture(bool pg,string connection,TableSpec spec,Snapshot? previous=null,CancellationToken cancellationToken=default,IProgress<int>? progress=null,long expectedRows=0) {
- if(spec.Keys.Length==0) throw new InvalidOperationException("主キーを指定してください。");
+ if(spec.Keys.Length==0&&!spec.AutoMatch) throw new InvalidOperationException("主キーを指定してください。");
  await using DbConnection db=pg?new NpgsqlConnection(connection):new SqlConnection(connection);
  await db.OpenAsync(cancellationToken);
  // 1回の取得内で整合性を保つ。SQL Serverでは更新を待たせる可能性があり、両DB間の同時点性は保証しない。
@@ -44,7 +44,8 @@ public static class Engine {
  // ponytail: snapshots stay in RAM; disk partitions are needed beyond available memory.
  // COUNTは取得と別時点なので容量のヒントにだけ使う。巨大な見積りで取得前にメモリを使い切らないよう初期確保は100万件まで。
  var rows=new Dictionary<string,string?[]>(previous?.Rows.Count??(int)Math.Clamp(expectedRows,0,1_000_000),StringComparer.Ordinal);
- var reuse=previous!=null&&columns.SequenceEqual(previous.Columns,StringComparer.OrdinalIgnoreCase);
+ // 主キーなしの通番は取得内だけの識別子。DBの返却順を前後の行対応と解釈しない。
+ var reuse=spec.Keys.Length>0&&previous!=null&&!previous.Keyless&&columns.SequenceEqual(previous.Columns,StringComparer.OrdinalIgnoreCase);
  var readers=Enumerable.Range(0,columns.Length).Select(i=>ValueReader(reader.GetFieldType(i))).ToArray();
  var keyValues=new string?[keys.Length];
  while(await reader.ReadAsync(cancellationToken)) {
@@ -52,7 +53,7 @@ public static class Engine {
  if(matchIndexes.Length>0)ValidateMatchingRow(row,matchIndexes,matchingRows,spec,pg?"PostgreSQL":"SQL Server");
  for(var i=0;i<keys.Length;i++){keyValues[i]=row[keys[i]];if(keyValues[i]==null)throw new InvalidOperationException("主キーがNULLです。");}
  // 複合キーを区切り文字で連結すると値に区切り文字がある場合に衝突するため、JSON配列で識別する。
- var key=System.Text.Json.JsonSerializer.Serialize(keyValues);
+ var key=keys.Length==0?"row:"+rows.Count.ToString(CultureInfo.InvariantCulture):System.Text.Json.JsonSerializer.Serialize(keyValues);
  if(reuse&&previous!.Rows.TryGetValue(key,out var old)) {
  var same=true;for(var i=0;i<row.Length;i++)if(row[i]==old[i])row[i]=old[i];else same=false;
  if(same)row=old;
@@ -60,7 +61,7 @@ public static class Engine {
  if(!rows.TryAdd(key,row)){if(spec.BusinessIdentity)throw ConfigurationError(spec,$"{(pg?"PostgreSQL":"SQL Server")}の操作前後の識別列（{string.Join(", ",spec.Keys)}）が重複しています。別の対応列を選択してください。");throw new InvalidOperationException("主キーが一意ではありません。");}
  if(rows.Count%10000==0)progress?.Report(rows.Count);
  }
- progress?.Report(rows.Count);await reader.DisposeAsync(); await tx.CommitAsync(cancellationToken); return new(columns,rows,DateTimeOffset.UtcNow);
+ progress?.Report(rows.Count);await reader.DisposeAsync(); await tx.CommitAsync(cancellationToken); return new(columns,rows,DateTimeOffset.UtcNow,keys.Length==0);
  }
  // 行配列をコピーせず、指定列の値だけで一意性を検証する。検証用集合は取得終了時に解放する。
  sealed class RowKeyComparer(int[] indexes):IEqualityComparer<string?[]> {
@@ -70,6 +71,39 @@ public static class Engine {
  static ComparisonConfigurationException ConfigurationError(TableSpec spec,string reason)=>new($"{spec.Name}: {reason}");
  public static string[] AutomaticMatchingExcluded(TableSpec spec)=>spec.Keys.Concat(spec.AutoMatchExcluded??[])
   .Concat((spec.Definition??[]).Where(c=>c.UnstableForMatching).Select(c=>c.Name)).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+ static (Change[] Changes,string? Identity) KeylessChanges(Snapshot before,Snapshot after,int[] beforeMap,int[] afterMap,int[] active,int[] stable,CancellationToken token) {
+  var beforeAligned=beforeMap.Select((value,index)=>value==index).All(v=>v);var afterAligned=afterMap.Select((value,index)=>value==index).All(v=>v);
+  string?[] Align(string?[] row,int[] map,bool aligned)=>aligned?row:map.Select(i=>row[i]).ToArray();
+  var b=before.Rows.Select(r=>(r.Key,Row:Align(r.Value,beforeMap,beforeAligned))).ToArray();
+  var counts=new Dictionary<string?[],int>(Math.Min(b.Length,1_000_000),new RowKeyComparer(active));
+  foreach(var (_,row) in b){token.ThrowIfCancellationRequested();counts[row]=counts.GetValueOrDefault(row)+1;}
+  var added=new List<(string Key,string?[] Row)>();
+  foreach(var (key,row) in after.Rows){token.ThrowIfCancellationRequested();var aligned=Align(row,afterMap,afterAligned);if(counts.TryGetValue(aligned,out var count)&&count>0)counts[aligned]=count-1;else added.Add((key,aligned));}
+  var removed=new List<(string Key,string?[] Row)>();
+  foreach(var item in b){token.ThrowIfCancellationRequested();if(counts[item.Row]>0){counts[item.Row]--;removed.Add(item);}}
+  // 重複行は集合に潰さず件数差を残す。変更なしの行を除いてから識別列候補を調べる。
+  Dictionary<string,(string Key,string?[] Row)>? best=null;var bestIndex=-1;var tied=false;
+  foreach(var index in stable) {
+   Dictionary<string,(string Key,string?[] Row)?> Unique(List<(string Key,string?[] Row)> rows) {
+    var values=new Dictionary<string,(string Key,string?[] Row)?>(StringComparer.Ordinal);
+    foreach(var row in rows){token.ThrowIfCancellationRequested();if(row.Row[index] is {} value){if(!values.TryAdd(value,row))values[value]=null;}}
+    return values;
+   }
+   var old=Unique(removed);var next=Unique(added);var candidate=new Dictionary<string,(string Key,string?[] Row)>(StringComparer.Ordinal);
+   foreach(var (value,row) in old){token.ThrowIfCancellationRequested();if(row is {} source&&next.TryGetValue(value,out var target)&&target is {} destination)candidate.Add(source.Key,destination);}
+   if(candidate.Count==0)continue;
+   if(best==null||candidate.Count>best.Count){best=candidate;bestIndex=index;tied=false;}
+   else if(candidate.Count==best.Count&&!candidate.All(pair=>best.TryGetValue(pair.Key,out var other)&&other.Key==pair.Value.Key))tied=true;
+  }
+  // 同点で異なる対応がある場合は推定しない。複合キーを総当たりで探索しないため、単一列で決まらない変更は削除＋追加として残す。
+  if(tied){best=null;bestIndex=-1;}
+  var changes=new List<Change>();var used=new HashSet<string>(StringComparer.Ordinal);
+  foreach(var (key,row) in removed)if(best!=null&&best.TryGetValue(key,out var next)){token.ThrowIfCancellationRequested();used.Add(next.Key);changes.Add(new(key,"更新",row,next.Row,active.Where(i=>row[i]!=next.Row[i]).ToArray()));}
+  var uncertain=removed.Count>(best?.Count??0)&&added.Count>used.Count;
+  foreach(var (key,row) in removed){token.ThrowIfCancellationRequested();if(best==null||!best.ContainsKey(key))changes.Add(new("before:"+key,"削除",row,null,active,uncertain));}
+  foreach(var (key,row) in added){token.ThrowIfCancellationRequested();if(!used.Contains(key))changes.Add(new("after:"+key,"追加",null,row,active,uncertain));}
+  return(changes.ToArray(),bestIndex<0?null:before.Columns[beforeMap[bestIndex]]);
+ }
  static int[] ComparisonIndexes(string[] columns,TableSpec spec) {
  var match=spec.MatchKeys??[];var excluded=spec.ComparisonIgnored??[];
  if(spec.MatchKeys is {Length:0}||match.Distinct(StringComparer.OrdinalIgnoreCase).Count()!=match.Length)
@@ -174,6 +208,7 @@ public static class Engine {
  // 全件の集合・ソート・行コピーを避け、変更した主キーだけを保持する。
  var candidates=new HashSet<string>(StringComparer.Ordinal);
  void FindChanges(Snapshot before,Snapshot after,int[] beforeMap,int[] afterMap,HashSet<string> changedKeys) {
+ if(before.Keyless||after.Keyless)return;
  var sameOrder=beforeMap.AsSpan().SequenceEqual(afterMap);
  var beforeActive=active.Select(i=>beforeMap[i]).ToArray();var afterActive=active.Select(i=>afterMap[i]).ToArray();
  foreach(var (key,row) in before.Rows) {
@@ -216,12 +251,19 @@ public static class Engine {
  // 推定は変更行だけで行う。主キー・日時の差を対応付けから外しても、最終判定では必ず比較する。
  var excluded=AutomaticMatchingExcluded(spec).ToHashSet(StringComparer.OrdinalIgnoreCase);
  var stable=active.Where(i=>!excluded.Contains(columns[i])&&!comparisonIgnored.Contains(columns[i])).ToArray();
- var p=candidates.Order(StringComparer.Ordinal).Select(k=>Get(k,pb,pa,identity,pm,true,pgAfterAligned)).ToArray();
- var s=sqlCandidates.Order(StringComparer.Ordinal).Select(k=>Get(k,sb,sa,bm,sm,sqlBeforeAligned,sqlAfterAligned)).ToArray();
+ var pgKeyless=pb.Keyless||pa.Keyless;var sqlKeyless=sb.Keyless||sa.Keyless;
+ var pk=pgKeyless?KeylessChanges(pb,pa,identity,pm,active,stable,cancellationToken):(Changes:Array.Empty<Change>(),Identity:(string?)null);
+ var sk=sqlKeyless?KeylessChanges(sb,sa,bm,sm,active,stable,cancellationToken):(Changes:Array.Empty<Change>(),Identity:(string?)null);
+ // 推定した文字列の業務識別列はDB間の照合にも使う。採番候補となる数値・GUIDだけを照合材料から外す。
+ var inferred=new[]{pk.Identity,sk.Identity}.Where(n=>n!=null&&(spec.Definition??[]).Any(c=>string.Equals(c.Name,n,StringComparison.OrdinalIgnoreCase)&&(c.Numeric||c.ValueType=="Guid"))).Cast<string>().Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+ stable=stable.Where(i=>!inferred.Contains(columns[i],StringComparer.OrdinalIgnoreCase)).ToArray();
+ var p=pgKeyless?pk.Changes:candidates.Order(StringComparer.Ordinal).Select(k=>Get(k,pb,pa,identity,pm,true,pgAfterAligned)).ToArray();
+ var s=sqlKeyless?sk.Changes:sqlCandidates.Order(StringComparer.Ordinal).Select(k=>Get(k,sb,sa,bm,sm,sqlBeforeAligned,sqlAfterAligned)).ToArray();
  var pUsed=new HashSet<Change>();var sUsed=new HashSet<Change>();
  Dictionary<string,List<Change>> GroupAutomatic(Change[] changes) {
  var groups=new Dictionary<string,List<Change>>(StringComparer.Ordinal);
  foreach(var change in changes) {
+ if(change.Uncertain)continue;
  cancellationToken.ThrowIfCancellationRequested();var row=change.After??change.Before!;
  // 照合材料なし・全NULLでは根拠がない。候補重複も後段で拒否し、任意のペアを一致にしない。
  if(stable.Length==0||stable.All(i=>row[i]==null))continue;
@@ -235,14 +277,14 @@ public static class Engine {
  if(group.Count!=1||!sqlGroups.TryGetValue(key,out var other)||other.Count!=1)continue;
  var pg=group[0];var sql=other[0];pUsed.Add(pg);sUsed.Add(sql);
  var pr=pg.After??pg.Before!;var sr=sql.After??sql.Before!;
- var diff=judged.Where(i=>pr[i]!=sr[i]).ToArray();result.Add(new(pg.Key,pg,sql,diff.Length==0,diff));
+ var diff=judged.Where(i=>pr[i]!=sr[i]).ToArray();result.Add(new(pg.Key,pg,sql,diff.Length==0,diff,inferred));
  }
  var remainingPg=p.Where(c=>!pUsed.Contains(c)).ToArray();var remainingSql=s.Where(c=>!sUsed.Contains(c)).ToArray();
  var missing=new Change("","変更なし",null,null,[]);
  // 未対応行は表示用にまとめるだけで、対応したとは解釈しない。曖昧さは全対象列×として残す。
  for(var i=0;i<Math.Max(remainingPg.Length,remainingSql.Length);i++) {
  cancellationToken.ThrowIfCancellationRequested();var pg=i<remainingPg.Length?remainingPg[i]:missing;var sql=i<remainingSql.Length?remainingSql[i]:missing;
- result.Add(new(pg.Operation=="変更なし"?sql.Key:pg.Key,pg,sql,false,judged));
+ result.Add(new(pg.Operation=="変更なし"?sql.Key:pg.Key,pg,sql,false,judged,inferred));
  }
  }else if(businessMatching) {
  Dictionary<string,List<Change>> Group(HashSet<string> keys,Snapshot before,Snapshot after,int[] beforeMap,int[] afterMap,bool beforeAligned,bool afterAligned) {
@@ -308,7 +350,7 @@ public static class Engine {
  Row(new[]{($"対象: {spec.Name}"+condition,"#ffffff")});
  if(spec.Columns is {Length:>0})Row(new[]{("取得列: "+string.Join(", ",columns),"#ffffff")});
  if(spec.Ignored.Length>0)Row(new[]{("除外列: "+string.Join(", ",spec.Ignored),"#ffffff")});
- if(spec.AutoMatch&&spec.MatchKeys==null)Row(new[]{("DB間の自動対応: 同じ操作の変更行を値で照合 / 照合材料から除外: "+string.Join(", ",AutomaticMatchingExcluded(spec).Where(n=>columns.Contains(n,StringComparer.OrdinalIgnoreCase)))+"（値の判定は対象） / 未対応・曖昧な行は×","#ffffff")});
+ if(spec.AutoMatch&&spec.MatchKeys==null)Row(new[]{("DB間の自動対応: 同じ操作の変更行を値で照合 / 照合材料から除外: "+string.Join(", ",AutomaticMatchingExcluded(spec).Concat(evidence.SelectMany(e=>e.InferredIdentity??[])).Distinct(StringComparer.OrdinalIgnoreCase).Where(n=>columns.Contains(n,StringComparer.OrdinalIgnoreCase)))+"（値の判定は対象） / 未対応・曖昧な行は×","#ffffff")});
  if(spec.MatchKeys is {Length:>0})Row(new[]{("DB間の対応列: "+string.Join(", ",spec.MatchKeys)+(spec.BusinessIdentity?"（操作前後の識別にも使用）":""),"#ffffff")});
  if(spec.ComparisonIgnored is {Length:>0})Row(new[]{("DB間判定の除外列: "+string.Join(", ",spec.ComparisonIgnored),"#ffffff")});
  Row(new[]{"DB","操作"}.Concat(columns).Select(c=>(c,"#d9e2f3")));

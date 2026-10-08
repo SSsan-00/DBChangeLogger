@@ -23,6 +23,12 @@ public record TableColumn(string Name,string ValueType,string DatabaseType) {
 public record DatabaseTable(string Name, string[] Keys);
 public record CommonTable(DatabaseTable Postgres, DatabaseTable SqlServer) {
  public override string ToString()=>Postgres.Name;
+ public (TableSpec Pg,TableSpec Sql) AutomaticSpecs(string[] ignored,TableFilter? filter=null) {
+  var sqlKeys=SqlServer.Keys;
+  if(Postgres.Keys.Length==sqlKeys.Length&&Postgres.Keys.ToHashSet(StringComparer.OrdinalIgnoreCase).SetEquals(sqlKeys))
+   sqlKeys=Postgres.Keys.Select(k=>sqlKeys.Single(s=>string.Equals(s,k,StringComparison.OrdinalIgnoreCase))).ToArray();
+  return(new("public",Postgres.Name,Postgres.Keys,ignored,filter,AutoMatch:true),new("dbo",SqlServer.Name,sqlKeys,ignored,filter,AutoMatch:true));
+ }
  public string? KeyError=>Postgres.Keys.Length==0||SqlServer.Keys.Length==0
   ? "主キーがありません。「比較設定」で一意なDB間の対応列を選択してください。"
   : Postgres.Keys.Length!=SqlServer.Keys.Length||!Postgres.Keys.ToHashSet(StringComparer.OrdinalIgnoreCase).SetEquals(SqlServer.Keys)

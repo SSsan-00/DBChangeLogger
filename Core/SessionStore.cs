@@ -50,7 +50,7 @@ public static class SessionStore {
    file.Position=start;using var limited=new LimitedReadStream(file,end-start);using var aes=Aes.Create();aes.Key=key[..32];aes.IV=iv;
    using var crypto=new CryptoStream(limited,aes.CreateDecryptor(),CryptoStreamMode.Read);using var compressed=new BrotliStream(crypto,CompressionMode.Decompress);
    var session=JsonSerializer.Deserialize<SavedSession>(compressed)??throw new InvalidDataException();compressed.CopyTo(Stream.Null);
-   if(session.Version is not (1 or 2 or 3 or 4))throw new InvalidDataException();return session;
+   if(session.Version is not (1 or 2 or 3 or 4 or 5))throw new InvalidDataException();return session;
   }finally{CryptographicOperations.ZeroMemory(key);}
  }
  // 末尾のHMACを暗号文としてCryptoStreamへ渡すとパディング検証が失敗するため、読み取り範囲を制限する。

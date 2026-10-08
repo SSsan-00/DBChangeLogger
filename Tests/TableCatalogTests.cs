@@ -27,6 +27,13 @@ public class TableCatalogTests {
   }
  }
  [TestMethod]
+ public void AutomaticSpecsAcceptMissingAndDifferentKeysWithoutConfiguration() {
+  foreach(var (pKeys,sKeys) in new[]{(Array.Empty<string>(),Array.Empty<string>()),(new[]{"id"},Array.Empty<string>()),(new[]{"id"},new[]{"other"})}) {
+   var (p,s)=new CommonTable(new("x",pKeys),new("x",sKeys)).AutomaticSpecs([]);
+   Assert.IsTrue(p.AutoMatch&&s.AutoMatch);CollectionAssert.AreEqual(pKeys,p.Keys);CollectionAssert.AreEqual(sKeys,s.Keys);Assert.IsNull(p.MatchKeys);
+  }
+ }
+ [TestMethod]
  public void ColumnDefinitions_ResolveActualNamesConvertValuesAndRejectUnknownColumns() {
   TableColumn[] definition=[new("id","Int32","int"),new("Code","String","varchar"),new("Amount","Decimal","numeric"),new("RegisterDate","DateTime","datetime2")];
   foreach(var pg in new[]{true,false}) {

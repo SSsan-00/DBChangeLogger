@@ -19,6 +19,48 @@ public class ComparisonSettingsTests {
  }
  static readonly XNamespace Ss="urn:schemas-microsoft-com:office:spreadsheet";
  static string[] Values(XElement row)=>row.Descendants(Ss+"Data").Select(c=>c.Value).ToArray();
+ static Snapshot Heap(string[] columns,params string?[][] rows)=>new(columns,rows.Select((row,i)=>(row,i)).ToDictionary(r=>"row:"+r.i,r=>r.row),DateTimeOffset.UnixEpoch,true);
+
+ [TestMethod]
+ public void KeylessTablesCancelIdenticalRowsByCountRegardlessOfOrderAndIgnoredValues() {
+  var columns=new[]{"code","value","stamp"};var spec=new TableSpec("public","heap",[],["stamp"],AutoMatch:true);
+  var before=Heap(columns,["A","10","old"],[null,"",null],["A","10","duplicate"]);
+  var after=Heap(columns,[null,"","different"],["A","10","new"],["A","10",null]);
+  Assert.AreEqual(0,Engine.Compare(before,after,before,after,spec).Count);
+  var fewer=Heap(columns,[null,"","different"],["A","10","new"]);
+  var change=Engine.Compare(before,fewer,before,fewer,spec).Single();Assert.AreEqual("削除",change.Pg.Operation);Assert.IsTrue(change.Match);
+  Assert.IsTrue(Engine.Compare(fewer,before,fewer,before,spec).Single().Match);
+  Assert.ThrowsExactly<OperationCanceledException>(()=>Engine.Compare(before,after,before,after,spec,new CancellationToken(true)));
+ }
+
+ [TestMethod]
+ public void KeylessTablesInferUpdatesAndKeepSequenceAndDateDifferences() {
+  var columns=new[]{"id","code","amount","date"};var spec=new TableSpec("public","heap",[],[],AutoMatch:true,
+   Definition:[new("id","Int32","integer"),new("code","String","text"),new("amount","Decimal","numeric"),new("date","DateTime","timestamp")]);
+  var pb=Heap(columns,["1","A","10","old"],["2","B","20","old"]);var pa=Heap(columns,["2","B","30","new"],["1","A","20","new"]);
+  var sb=Heap(columns,["98","A","10","other"],["99","B","20","other"]);var sa=Heap(columns,["99","B","30","othernew"],["98","A","20","othernew"]);
+  var result=Engine.Compare(pb,pa,sb,sa,spec);Assert.AreEqual(2,result.Count);Assert.IsTrue(result.All(c=>c.Pg.Operation=="更新"&&c.Sql.Operation=="更新"&&c.Different.SequenceEqual(new[]{0,3})));
+  Assert.IsTrue(result.All(c=>c.Pg.After![1]==c.Sql.After![1]));
+  var rows=Render(pb,pa,sb,sa,spec);CollectionAssert.AreEqual(new[]{"判定","","×","◯","◯","×"},Values(rows[^1]));
+  Assert.IsTrue(Values(rows[1])[0].Contains("id"));
+  var sqlSpec=spec with{Keys=["id"]};var mixed=spec.WithAutomaticMetadata(sqlSpec);
+  Snapshot Primary(Snapshot snapshot)=>snapshot with{Keyless=false,Rows=snapshot.Rows.Values.ToDictionary(r=>JsonSerializer.Serialize(new[]{r[0]}),r=>r)};
+  Assert.IsTrue(Engine.Compare(pb,pa,Primary(sb),Primary(sa),mixed).All(c=>c.Pg.Operation=="更新"&&c.Different.SequenceEqual(new[]{0,3})&&c.Sql.Before![0]==c.Sql.After![0]));
+  var reversed=pa with{Columns=columns.Reverse().ToArray(),Rows=pa.Rows.ToDictionary(r=>r.Key,r=>r.Value.Reverse().ToArray())};
+  CollectionAssert.AreEqual(result[0].Different,Engine.Compare(pb,reversed,sb,sa,spec)[0].Different);
+ }
+
+ [TestMethod]
+ public void KeylessAmbiguousUpdatesRemainDeletesAndAddsAndRejectAllColumns() {
+  var columns=new[]{"id","name","amount"};var spec=new TableSpec("public","heap",[],[],AutoMatch:true,Definition:[new("id","Int32","integer"),new("name","String","text"),new("amount","Int32","integer")]);
+  var pb=Heap(columns,["1","A","10"],["2","B","10"]);var pa=Heap(columns,["1","B","20"],["2","A","20"]);
+  var result=Engine.Compare(pb,pa,pb,pa,spec);Assert.AreEqual(4,result.Count);Assert.IsTrue(result.All(c=>!c.Match&&c.Different.Length==3));
+  CollectionAssert.AreEquivalent(new[]{"削除","削除","追加","追加"},result.Select(c=>c.Pg.Operation).ToArray());
+  var duplicate=Heap(columns,[null,"A","10"],[null,"A","10"]);var updated=Heap(columns,[null,"A","20"],[null,"A","20"]);
+  Assert.AreEqual(4,Engine.Compare(duplicate,updated,duplicate,updated,spec).Count);
+  Assert.IsTrue(Engine.Compare(duplicate,updated,duplicate,updated,spec).All(c=>!c.Match));
+  Assert.IsTrue(Values(Render(pb,pa,pb,pa,spec)[^1]).Skip(2).All(v=>v=="×"));
+ }
 
  [TestMethod]
  public void AutomaticMatchingKeepsSequenceAndDateDifferencesInJudgment() {
@@ -205,7 +247,8 @@ public class ComparisonSettingsTests {
   try {
    foreach(var p in new[]{true,false}) {
     var table=(p?"public.":"dbo.")+name;var version=p?"bytea DEFAULT decode('01','hex')":"rowversion";
-    await Execute(p,$"CREATE TABLE {table}(id int PRIMARY KEY,name varchar(40),amount decimal(12,2),registered date,version {version}); INSERT INTO {table}(id,name,amount,registered) VALUES({(p?1:99)},'A',10,'2026-10-{(p?8:9):00}'),({(p?2:98)},'B',10,'2026-10-{(p?8:9):00}');");
+    foreach(var suffix in new[]{"","_heap"})await Execute(p,$"CREATE TABLE {table}{suffix}(id int {(suffix.Length==0?"PRIMARY KEY":"")},name varchar(40),amount decimal(12,2),registered date,version {version}); INSERT INTO {table}{suffix}(id,name,amount,registered) VALUES({(p?1:99)},'A',10,'2026-10-{(p?8:9):00}'),({(p?2:98)},'B',10,'2026-10-{(p?8:9):00}');");
+    await Execute(p,$"INSERT INTO {table}_heap(id,name,amount,registered) VALUES(NULL,NULL,NULL,NULL),(NULL,NULL,NULL,NULL);");
    }
    var pSpec=new TableSpec("public",name,["id"],[],AutoMatch:true,Definition:await TableCatalog.ReadColumns(true,pg,name));
    var sSpec=new TableSpec("dbo",name,["id"],[],AutoMatch:true,Definition:await TableCatalog.ReadColumns(false,sql,name));pSpec=pSpec.WithAutomaticMetadata(sSpec);sSpec=sSpec.WithAutomaticMetadata(pSpec);
@@ -220,7 +263,13 @@ public class ComparisonSettingsTests {
    foreach(var p in new[]{true,false})await Execute(p,$"DELETE FROM {(p?"public.":"dbo.")}{name};");
    var deleted=await Engine.CapturePair(pg,sql,pSpec,sSpec);
    Assert.IsTrue(Engine.Compare(after.Pg,deleted.Pg,after.Sql,deleted.Sql,pSpec).All(c=>c.Pg.Operation=="削除"&&c.Different.SequenceEqual(new[]{0,3,4})));
-  }finally{foreach(var p in new[]{true,false})await Execute(p,$"DROP TABLE IF EXISTS {(p?"public.":"dbo.")}{name};");}
+   var (hp,hs)=new CommonTable(new(name+"_heap",[]),new(name+"_heap",[])).AutomaticSpecs([]);
+   hp=hp with{Definition=await TableCatalog.ReadColumns(true,pg,name+"_heap")};hs=hs with{Definition=await TableCatalog.ReadColumns(false,sql,name+"_heap")};hp=hp.WithAutomaticMetadata(hs);hs=hs.WithAutomaticMetadata(hp);
+   var heapBefore=await Engine.CapturePair(pg,sql,hp,hs);Assert.AreEqual(4,heapBefore.Pg.Rows.Count);Assert.AreEqual(4,heapBefore.Sql.Rows.Count);Assert.IsTrue(heapBefore.Pg.Keyless&&heapBefore.Sql.Keyless);
+   foreach(var p in new[]{true,false})await Execute(p,$"UPDATE {(p?"public.":"dbo.")}{name}_heap SET amount=CASE name WHEN 'A' THEN 20 ELSE 30 END WHERE id IS NOT NULL;");
+   var heapAfter=await Engine.CapturePair(pg,sql,hp,hs,heapBefore.Pg,heapBefore.Sql);
+   var heapChanges=Engine.Compare(heapBefore.Pg,heapAfter.Pg,heapBefore.Sql,heapAfter.Sql,hp);Assert.AreEqual(2,heapChanges.Count);Assert.IsTrue(heapChanges.All(c=>c.Pg.Operation=="更新"&&c.Sql.Operation=="更新"&&c.Different.SequenceEqual(new[]{0,3,4})));
+  }finally{foreach(var p in new[]{true,false})await Execute(p,$"DROP TABLE IF EXISTS {(p?"public.":"dbo.")}{name}_heap;DROP TABLE IF EXISTS {(p?"public.":"dbo.")}{name};");}
  }
 
  [TestMethod,TestCategory("Performance")]
@@ -241,7 +290,7 @@ public class ComparisonSettingsTests {
    }
   }
   var pb=new Snapshot(Columns,pRows,DateTimeOffset.UnixEpoch);var sb=new Snapshot(Columns,sRows,DateTimeOffset.UnixEpoch);var pa=pb with{Rows=pNext};var sa=sb with{Rows=sNext};
-  var results=new List<object>();var automaticResults=new List<object>();
+  var results=new List<object>();var automaticResults=new List<object>();var keylessResults=new List<object>();
   for(var run=0;run<3;run++) {
    GC.Collect();GC.WaitForPendingFinalizers();GC.Collect();var allocated=GC.GetTotalAllocatedBytes(true);var timer=System.Diagnostics.Stopwatch.StartNew();
    var changes=Engine.Compare(pb,pa,sb,sa,Spec);timer.Stop();var bytes=GC.GetTotalAllocatedBytes(true)-allocated;
@@ -251,9 +300,14 @@ public class ComparisonSettingsTests {
    var automatic=Engine.Compare(pb,pa,sb,sa,Spec with{MatchKeys=null,ComparisonIgnored=null,AutoMatch=true});timer.Stop();bytes=GC.GetTotalAllocatedBytes(true)-allocated;
    Assert.AreEqual((count+999)/1000,automatic.Count);Assert.IsTrue(automatic.All(e=>e.Different.SequenceEqual(new[]{0})));
    automaticResults.Add(new{Seconds=timer.Elapsed.TotalSeconds,AllocatedBytes=bytes});
+   var keylessSpec=Spec with{Keys=[],MatchKeys=null,ComparisonIgnored=null,AutoMatch=true,Definition=Columns.Select(c=>new TableColumn(c,c=="id"?"Int32":"String",c=="id"?"integer":"text")).ToArray()};
+   allocated=GC.GetTotalAllocatedBytes(true);timer.Restart();
+   var keyless=Engine.Compare(pb with{Keyless=true},pa with{Keyless=true},sb with{Keyless=true},sa with{Keyless=true},keylessSpec);timer.Stop();bytes=GC.GetTotalAllocatedBytes(true)-allocated;
+   Assert.AreEqual((count+999)/1000,keyless.Count);Assert.IsTrue(keyless.All(e=>e.Pg.Operation=="更新"&&e.Different.SequenceEqual(new[]{0})));
+   keylessResults.Add(new{Seconds=timer.Elapsed.TotalSeconds,AllocatedBytes=bytes});
   }
   Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(report))!);
-  File.WriteAllText(report,JsonSerializer.Serialize(new{RowsPerDatabase=count,Columns=Columns.Length,ChangedRowsPerDatabase=(count+999)/1000,Measurements=results,AutomaticMeasurements=automaticResults},new JsonSerializerOptions{WriteIndented=true}));
+  File.WriteAllText(report,JsonSerializer.Serialize(new{RowsPerDatabase=count,Columns=Columns.Length,ChangedRowsPerDatabase=(count+999)/1000,Measurements=results,AutomaticMeasurements=automaticResults,KeylessMeasurements=keylessResults},new JsonSerializerOptions{WriteIndented=true}));
   // 百万件を超える並列経路でも、設定エラーの理由をAggregateExceptionに隠さず返す。
   var changed=pNext["[\"0\"]"].ToArray();changed[1]="CHANGED";pNext["[\"0\"]"]=changed;
   Assert.ThrowsExactly<ComparisonConfigurationException>(()=>Engine.Compare(pb,pa,sb,sa,Spec));

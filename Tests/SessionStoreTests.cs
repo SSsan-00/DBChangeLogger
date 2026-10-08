@@ -13,10 +13,11 @@ public class SessionStoreTests {
   var spec=d.Spec with{Definition=[new("id","Int32","integer"),new("name","String","text")]};
   var other=spec with{Name="orders",Filters=[new("id",">=","100","数値")],Columns=["id","amount"],Ignored=[],MatchKeys=["name"],ComparisonIgnored=["id"],BusinessIdentity=true};
   spec=spec with{AutoMatch=true,AutoMatchExcluded=["id","registered"]};
-  var state=new SavedSession(4,"hash",d.Spec.Name,"name,amount","stamp",[new(new("name","=","  tester  "),"OR")],spec,spec,d.PgBefore,d.SqlBefore,"<xml>00123=1+1</xml>",[new("1","更新","変更なし","amount","不一致",spec.Name)],"7件","結果","demo",[new(spec,spec,d.PgBefore,d.SqlBefore,"7件"),new(other,other,d.PgBefore,d.SqlBefore,"2件")],["name"],["id"],true);
+  var state=new SavedSession(5,"hash",d.Spec.Name,"name,amount","stamp",[new(new("name","=","  tester  "),"OR")],spec,spec,d.PgBefore with{Keyless=true},d.SqlBefore,"<xml>00123=1+1</xml>",[new("1","更新","変更なし","amount","不一致",spec.Name)],"7件","結果","demo",[new(spec,spec,d.PgBefore,d.SqlBefore,"7件"),new(other,other,d.PgBefore,d.SqlBefore,"2件")],["name"],["id"],true);
   try {
    SessionStore.Save(path,state);var restored=SessionStore.Load(path);
    Assert.AreEqual(state.SpreadsheetXml,restored.SpreadsheetXml);Assert.AreEqual(state.Filters[0],restored.Filters[0]);
+   Assert.IsTrue(restored.PgBefore!.Keyless);
    CollectionAssert.AreEqual(state.PgBefore!.Columns,restored.PgBefore!.Columns);
    foreach(var row in state.PgBefore.Rows)CollectionAssert.AreEqual(row.Value,restored.PgBefore.Rows[row.Key]);
    Assert.AreEqual(state.Results[0],restored.Results[0]);
@@ -30,6 +31,7 @@ public class SessionStoreTests {
    SessionStore.Save(path,state with{Version=1,Targets=null});Assert.IsNull(SessionStore.Load(path).Targets);
    SessionStore.Save(path,state with{Version=2,MatchKeys=null,ComparisonIgnored=null});Assert.IsNull(SessionStore.Load(path).MatchKeys);
    SessionStore.Save(path,state with{Version=3,AutoMatch=false});Assert.IsFalse(SessionStore.Load(path).AutoMatch);
+   SessionStore.Save(path,state with{Version=4});Assert.AreEqual(4,SessionStore.Load(path).Version);
    SessionStore.Save(path,state);
    var bytes=File.ReadAllBytes(path);bytes[^40]^=1;File.WriteAllBytes(path,bytes);
    Assert.ThrowsExactly<CryptographicException>(()=>SessionStore.Load(path));
