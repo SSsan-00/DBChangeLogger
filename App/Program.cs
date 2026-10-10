@@ -29,7 +29,8 @@ class MainForm:Form {
  readonly Button before=new(){Text="操作前を取得",AutoSize=true},after=new(){Text="操作後を取得・比較",AutoSize=true},copy=new(){Text="エビデンスをコピー",AutoSize=true,Enabled=false};
  readonly Button cancel=new(){Text="中断",AutoSize=true,Enabled=false};
  readonly Label rowCounts=new(){Text="取得対象件数: 未確認",AutoSize=true,MaximumSize=new Size(870,0)};CancellationTokenSource? execution;string? captureStage;
- readonly Label status=new(){AutoSize=true,MaximumSize=new Size(870,0)};readonly DataGridView grid=new(){Dock=DockStyle.Fill,Visible=false,ReadOnly=true,AllowUserToAddRows=false,BackgroundColor=SystemColors.Window,AutoSizeColumnsMode=DataGridViewAutoSizeColumnsMode.Fill};
+ readonly Label status=new(){AutoSize=true,MaximumSize=new Size(870,0)};readonly DataGridView grid=new(){Dock=DockStyle.Fill,Visible=false,ReadOnly=true,AllowUserToAddRows=false,AllowUserToDeleteRows=false,VirtualMode=true,ColumnHeadersVisible=false,RowHeadersVisible=false,BackgroundColor=SystemColors.Window,AutoSizeColumnsMode=DataGridViewAutoSizeColumnsMode.None};
+ EvidencePreview? preview;
  readonly bool demo;bool closingAllowed,stateBusy;string selectedTable="";ResultSummary[] results=[];
  // 各追跡対象の操作前は最初の比較基準。操作後を再取得しても置き換えない。
  readonly List<TrackedTable> targets=[];
@@ -61,6 +62,13 @@ class MainForm:Form {
  reset.Click+=(_,_)=>{ClearCaptured();foreach(var c in settings)c.Enabled=true;after.Enabled=copy.Enabled=false;UpdateTableSelection();grid.DataSource=null;grid.Visible=false;rowCounts.Text="取得対象件数: 未確認";reload.Enabled=!string.IsNullOrEmpty(pgConnection);status.Text=(!string.IsNullOrEmpty(pgConnection)?"設定を変更できます。操作前から取得してください。":"接続先が設定されていません。作成者に設定済みのアプリを依頼してください。");};
  var buttons=new FlowLayoutPanel(){Width=870,Height=34};buttons.Controls.AddRange(new Control[]{before,after,copy,reset,cancel});panel.Controls.Add(buttons);panel.Controls.Add(rowCounts);panel.Controls.Add(status);
  Controls.Add(grid);Controls.Add(panel);after.Enabled=false;
+ grid.CellValueNeeded+=(_,e)=>{if(preview is {} p&&e.RowIndex<p.Rows.Length&&e.ColumnIndex<p.Rows[e.RowIndex].Length)e.Value=p.Rows[e.RowIndex][e.ColumnIndex].Value;};
+ grid.CellFormatting+=(_,e)=>{var color=preview is {} p&&e.RowIndex<p.Rows.Length&&e.ColumnIndex<p.Rows[e.RowIndex].Length?p.Rows[e.RowIndex][e.ColumnIndex].Color:"#ffffff";
+  e.CellStyle!.BackColor=e.CellStyle.SelectionBackColor=ColorTranslator.FromHtml(color);e.CellStyle.ForeColor=e.CellStyle.SelectionForeColor=Color.Black;};
+ // 説明行はExcelの空セルへ文字が続く表示に合わせ、横幅全体へ描く。数百列は横スクロールで確認する。
+ grid.RowPostPaint+=(_,e)=>{if(preview is not {} p||p.Rows[e.RowIndex].Length!=1)return;
+  var bounds=new Rectangle(e.RowBounds.Left,e.RowBounds.Top,grid.ClientSize.Width-SystemInformation.VerticalScrollBarWidth,e.RowBounds.Height-1);
+  e.Graphics.FillRectangle(Brushes.White,bounds);bounds.Inflate(-4,0);TextRenderer.DrawText(e.Graphics,p.Rows[e.RowIndex][0].Value,grid.Font,bounds,Color.Black,TextFormatFlags.VerticalCenter|TextFormatFlags.EndEllipsis|TextFormatFlags.NoPrefix);};
  Shown+=(_,_)=>{ResizeTargets();FitWindow();};grid.VisibleChanged+=(_,_)=>QueueFitWindow();status.SizeChanged+=(_,_)=>QueueFitWindow();rowCounts.SizeChanged+=(_,_)=>QueueFitWindow();
  before.Click+=async(_,_)=>await Execute(CaptureBefore);
  after.Click+=async(_,_)=>await Execute(CaptureAfter);
@@ -114,7 +122,16 @@ class MainForm:Form {
  }catch{status.Text="前回の保存データを復元できませんでした。操作前から取得してください。";}
  finally{stateBusy=false;Enabled=true;}
  }
- void RefreshResults(){grid.DataSource=results.Select(r=>new{r.テーブル,r.PG操作,r.SQL操作,r.変更列,r.判定}).ToArray();grid.Visible=results.Length>0;}
+ async void RefreshResults(){
+  var xml=spreadsheetXml;preview=null;grid.RowCount=0;grid.Columns.Clear();grid.Visible=false;
+  if(xml==null||results.Length==0)return;
+  try {
+   // セルの描画はVirtualModeで可視範囲だけ行う。XMLの読み取りはUIスレッドを塞がない。
+   var data=await Task.Run(()=>Engine.ReadPreview(xml));if(IsDisposed||!ReferenceEquals(xml,spreadsheetXml))return;
+   preview=data;for(var i=0;i<data.ColumnCount;i++)grid.Columns.Add(new DataGridViewTextBoxColumn(){Name="cell"+i,Width=i==0?160:i==1?80:140,SortMode=DataGridViewColumnSortMode.NotSortable});
+   grid.RowCount=data.Rows.Length;grid.Visible=true;QueueFitWindow();
+  }catch{if(!IsDisposed&&ReferenceEquals(xml,spreadsheetXml))status.Text="エビデンスのプレビューを表示できませんでした。コピー用データは保持しています。";}
+ }
  void RefreshTargets(){refreshingTargets=true;trackedList.Items.Clear();trackedList.Items.AddRange(targets.ToArray());ResizeTargets();refreshingTargets=false;}
  // 一覧は最大8行まで伸ばす。それ以上はスクロールし、少数のときも固定高の空白を残さない。
  void ResizeTargets(){trackedList.HorizontalExtent=trackedList.Items.Cast<object>().Select(t=>TextRenderer.MeasureText(t.ToString(),trackedList.Font).Width+8).DefaultIfEmpty(0).Max();trackedList.Height=Math.Max(1,Math.Min(8,trackedList.Items.Count))*trackedList.ItemHeight+4+(trackedList.HorizontalExtent>trackedList.ClientSize.Width?SystemInformation.HorizontalScrollBarHeight:0);QueueFitWindow();}

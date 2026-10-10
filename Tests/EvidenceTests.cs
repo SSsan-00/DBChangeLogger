@@ -11,6 +11,34 @@ namespace DbEvidenceTests;
 public sealed class EvidenceTests
 {
     [TestMethod]
+    public void PreviewReadsExactClipboardValuesColorsAndMultipleTableRows()
+    {
+        var cases=DemoEvidence.CreateMultiple().Append(DemoEvidence.Create()).ToArray();
+        var xml=Engine.CombineSpreadsheetXml(cases.Select(d=>Engine.Render(d.PgBefore.Columns,Engine.Compare(d.PgBefore,d.PgAfter,d.SqlBefore,d.SqlAfter,d.Spec),d.Spec,d.PgBefore,d.PgAfter,d.SqlBefore,d.SqlAfter,true).SpreadsheetXml));
+        XNamespace ss="urn:schemas-microsoft-com:office:spreadsheet";
+        var document=XDocument.Parse(xml);var rows=document.Descendants(ss+"Row").ToArray();
+        var colors=document.Descendants(ss+"Style").ToDictionary(s=>(string)s.Attribute(ss+"ID")!,s=>(string)s.Element(ss+"Interior")!.Attribute(ss+"Color")!);
+        var preview=Engine.ReadPreview(xml);Assert.AreEqual(rows.Length,preview.Rows.Length);
+        Assert.AreEqual(rows.Max(r=>r.Elements(ss+"Cell").Count()),preview.ColumnCount);
+        for(var r=0;r<rows.Length;r++) {
+            var cells=rows[r].Elements(ss+"Cell").ToArray();Assert.AreEqual(cells.Length,preview.Rows[r].Length);
+            for(var c=0;c<cells.Length;c++) {
+                Assert.AreEqual(cells[c].Element(ss+"Data")!.Value,preview.Rows[r][c].Value);
+                Assert.AreEqual(colors[(string)cells[c].Attribute(ss+"StyleID")!],preview.Rows[r][c].Color);
+            }
+        }
+        var values=preview.Rows.SelectMany(r=>r).Select(c=>c.Value).ToArray();
+        Assert.IsTrue(values.Contains("00123")&&values.Contains("=1+1")&&values.Contains("〈行なし〉"));
+        Assert.AreEqual(3,preview.Rows.Count(r=>r.FirstOrDefault()?.Value=="判定"));Assert.IsTrue(preview.Rows.Any(r=>r.Length==0));
+        var columns=Enumerable.Range(0,400).Select(i=>"col"+i).ToArray();
+        var wideBefore=new Snapshot(columns,new(){["1"]=columns.Select(_=>(string?)"00123").ToArray()},DateTimeOffset.UnixEpoch);
+        var wideAfter=wideBefore with{Rows=new(){["1"]=columns.Select(_=>(string?)"=1+1").ToArray()}};
+        var spec=new TableSpec("public","wide",["col0"],[]);
+        var wide=Engine.ReadPreview(Engine.Render(columns,Engine.Compare(wideBefore,wideAfter,wideBefore,wideAfter,spec),spec,wideBefore,wideAfter,wideBefore,wideAfter,true).SpreadsheetXml);
+        Assert.AreEqual(402,wide.ColumnCount);Assert.AreEqual("=1+1",wide.Rows[2][401].Value);Assert.AreEqual("#fff2cc",wide.Rows[2][401].Color);
+    }
+
+    [TestMethod]
     public void Comparison_FiltersRowsAndDetectsOperationsAndMismatches()
     {
         var d = DemoEvidence.Create();

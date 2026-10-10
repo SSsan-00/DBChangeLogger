@@ -21,6 +21,8 @@ public record TableFilter(string Column,string Operator,string Value,string Type
 public record Snapshot(string[] Columns, Dictionary<string,string?[]> Rows, DateTimeOffset At,bool Keyless=false);
 public record Change(string Key, string Operation, string?[]? Before, string?[]? After, int[] Changed,bool Uncertain=false);
 public record Evidence(string Key, Change Pg, Change Sql, bool Match, int[] Different,string[]? SortColumns=null);
+public record PreviewCell(string Value,string Color);
+public record EvidencePreview(PreviewCell[][] Rows,int ColumnCount);
 public static class Engine {
  public const string ExcelLimitError="Excelの上限（1セル32,767文字、1,048,576行、16,384列）を超えるため、エビデンスをコピーできません。対象を絞ってください。";
  static string Q(string s, bool pg) => pg ? "\""+s.Replace("\"","\"\"")+"\"" : "["+s.Replace("]","]]")+"]";
@@ -399,6 +401,29 @@ public static class Engine {
  writer.WriteEndElement();writer.WriteEndElement();writer.WriteEndElement();writer.Flush();
  return(spreadsheetOnly?"":html.ToString(),text.ToString(),xml.ToString());
 
+ }
+ // コピー用XMLそのものを読む。比較や色付けを別実装にすると、復元時・複数表・列別判定で表示がずれる。
+ // ponytail: 表示値はRAMに保持する。変更行が大量でメモリ不足になる場合はXMLのページ単位読み取りへ移す。
+ public static EvidencePreview ReadPreview(string spreadsheetXml) {
+  var rows=new List<PreviewCell[]>();var colors=new Dictionary<string,string>(StringComparer.Ordinal);var columns=0;
+  using var reader=XmlReader.Create(new StringReader(spreadsheetXml),new XmlReaderSettings{DtdProcessing=DtdProcessing.Prohibit,XmlResolver=null});
+  const string ns="urn:schemas-microsoft-com:office:spreadsheet";
+  while(reader.Read()) {
+   if(reader.NodeType!=XmlNodeType.Element||reader.NamespaceURI!=ns)continue;
+   if(reader.LocalName=="Style") {
+    var id=reader.GetAttribute("ID",ns);using var style=reader.ReadSubtree();
+    while(style.Read())if(style.NodeType==XmlNodeType.Element&&style.LocalName=="Interior"&&id!=null)colors[id]=style.GetAttribute("Color",ns)??"#ffffff";
+   }else if(reader.LocalName=="Row") {
+    var cells=new List<PreviewCell>();using var row=reader.ReadSubtree();
+    while(row.Read())if(row.NodeType==XmlNodeType.Element&&row.LocalName=="Cell") {
+     var color=colors.GetValueOrDefault(row.GetAttribute("StyleID",ns)??"","#ffffff");var value="";using var cell=row.ReadSubtree();
+     while(cell.Read())if(cell.NodeType==XmlNodeType.Element&&cell.LocalName=="Data")value=cell.ReadElementContentAsString();
+     cells.Add(new(value,color));
+    }
+    columns=Math.Max(columns,cells.Count);rows.Add(cells.ToArray());
+   }
+  }
+  return new(rows.ToArray(),columns);
  }
  // 同じRenderで生成した表を1枚へ連結する。大量行をXMLツリーに展開せず、行単位でコピーする。
  public static string CombineSpreadsheetXml(IEnumerable<string> tables,CancellationToken cancellationToken=default) {
