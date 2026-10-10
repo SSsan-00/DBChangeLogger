@@ -15,7 +15,7 @@ public class ComparisonSettingsTests {
    Snap(["987","ORD-001","1","旧名","15","8"],["988","ORD-001","2","商品B","35","8"]),
    Snap(["987","ORD-001","1","商品A","20","9"],["988","ORD-001","2","商品B","40","9"]));
  static XElement[] Render(Snapshot pb,Snapshot pa,Snapshot sb,Snapshot sa,TableSpec? spec=null) {
-  spec??=Spec;return XDocument.Parse(Engine.Render(pb.Columns,Engine.Compare(pb,pa,sb,sa,spec),spec,pb,pa,sb,sa,true).SpreadsheetXml).Descendants(Ss+"Row").ToArray();
+  spec??=Spec;var before=false;return XDocument.Parse(Engine.Render(pb.Columns,Engine.Compare(pb,pa,sb,sa,spec),spec,pb,pa,sb,sa,true).SpreadsheetXml).Descendants(Ss+"Row").Where(r=>{var value=Values(r).FirstOrDefault();if(value=="操作前"){before=true;return false;}if(value=="操作後"){before=false;return false;}return !before&&r.HasElements;}).ToArray();
  }
  static readonly XNamespace Ss="urn:schemas-microsoft-com:office:spreadsheet";
  static string[] Values(XElement row)=>row.Descendants(Ss+"Data").Select(c=>c.Value).ToArray();

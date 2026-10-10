@@ -57,7 +57,7 @@ public sealed class ExcelArtifactTests
                 if (wanted != "FFFFFF") Assert.AreEqual("FF" + wanted, (string?)color?.Attribute("rgb"), address + "の色が違います。");
             }
         }
-        Assert.AreEqual(demos.Length==1?5:11, rows.Count);
+        Assert.AreEqual(demos.Length==1?11:23, rows.Count);
         Assert.AreEqual(rows.Cast<System.Text.RegularExpressions.Match>().Sum(row=>Regex.Matches(row.Groups[1].Value,"<td").Count),cells.Count(c=>c.Value.Element(ns+"v")!=null||c.Value.Element(ns+"is")!=null));
     }
 }

@@ -348,7 +348,7 @@ public static class Engine {
  var pgCount=evidence.Count(e=>e.Pg.Operation!="変更なし");var sqlCount=evidence.Count(e=>e.Sql.Operation!="変更なし");
  var sortColumns=spec.AutoMatch&&spec.MatchKeys==null?evidence.FirstOrDefault()?.SortColumns:null;
  var dataRows=evidence.Count==0?0:(long)Math.Max(1,pgCount)+Math.Max(1,sqlCount);
- if(dataRows+3+(spec.Ignored.Length>0?1:0)+(spec.Columns is {Length:>0}?1:0)+(spec.MatchKeys is {Length:>0}?1:0)+(spec.ComparisonIgnored is {Length:>0}?1:0)+(sortColumns is {Length:>0}?1:0)>1048576||columns.Length+2>16384)throw new InvalidOperationException(ExcelLimitError);
+ if(dataRows*2+7+(spec.Ignored.Length>0?1:0)+(spec.Columns is {Length:>0}?1:0)+(spec.MatchKeys is {Length:>0}?1:0)+(spec.ComparisonIgnored is {Length:>0}?1:0)+(sortColumns is {Length:>0}?1:0)>1048576||columns.Length+2>16384)throw new InvalidOperationException(ExcelLimitError);
  // Excelの推測による日付・数値・数式への変換を防ぐため、DataのString型と書式@を両方維持する。
  // ここに追加した上部の行は、直前のExcel行数上限チェックにも反映する。
  XNamespace ss="urn:schemas-microsoft-com:office:spreadsheet";
@@ -381,18 +381,23 @@ public static class Engine {
  if(sortColumns is {Length:>0})Row(new[]{("ソート: "+string.Join(" → ",sortColumns),"#ffffff")});
  if(spec.MatchKeys is {Length:>0})Row(new[]{("DB間の対応列: "+string.Join(", ",spec.MatchKeys)+(spec.BusinessIdentity?"（操作前後の識別にも使用）":""),"#ffffff")});
  if(spec.ComparisonIgnored is {Length:>0})Row(new[]{("DB間判定の除外列: "+string.Join(", ",spec.ComparisonIgnored),"#ffffff")});
- Row(new[]{"DB","操作"}.Concat(columns).Select(c=>(c,"#d9e2f3")));
  // 数百列の更新で各セルから変更列配列を再走査すると列数の二乗になる。行ごとに印を再利用する。
  var changedCells=new bool[columns.Length];
+ foreach(var before in new[]{true,false}) {
+ if(!before)Row(Array.Empty<(string Value,string Color)>());
+ Row(new[]{(before?"操作前":"操作後","#ffffff")});
+ Row(new[]{"DB","操作"}.Concat(columns).Select(c=>(c,"#d9e2f3")));
  foreach(var (db,pg,count) in new[]{("PostgreSQL",true,pgCount),("SQL Server",false,sqlCount)}) {
  foreach(var e in evidence) {
  var c=pg?e.Pg:e.Sql;
  // DBごとに変更行だけ出力する。変更が0件のDBだけ空欄の代表行を1行残し、行数は揃えない。
  if(c.Operation=="変更なし"){if(count>0)continue;Row(new[]{(db,"#ffffff"),(c.Operation,"#ffffff")}.Concat(columns.Select(_=>("","#ffffff"))));break;}
- // 削除行の表示は全列「行なし」。主キーによる対応付けはCompareで済ませ、削除前の値は出力しない。
- var values=c.After;
+ // 対応不明の更新と、追加前・削除後の行なしは区別する。前表も後表と同じ順序で出力する。
+ var values=before?c.Before:c.After;
+ var missing=before&&c.Operation=="更新"?"〈対応不明〉":"〈行なし〉";
  Array.Clear(changedCells);foreach(var i in c.Changed)if((uint)i<(uint)changedCells.Length)changedCells[i]=true;
- Row(new[]{(db,"#ffffff"),(c.Operation,c.Operation=="追加"?"#ddebf7":c.Operation=="削除"?"#dddddd":"#ffffff")}.Concat(columns.Select((col,i)=>(values==null?"〈行なし〉":Visible(values[i]),c.Operation=="追加"?"#ddebf7":c.Operation=="削除"?"#dddddd":changedCells[i]?"#fff2cc":"#ffffff")))); }
+ Row(new[]{(db,"#ffffff"),(c.Operation,c.Operation=="追加"?"#ddebf7":c.Operation=="削除"?"#dddddd":"#ffffff")}.Concat(columns.Select((col,i)=>(values==null?missing:Visible(values[i]),c.Operation=="追加"?"#ddebf7":c.Operation=="削除"?"#dddddd":changedCells[i]?"#fff2cc":"#ffffff")))); }
+ }
  }
  // 行数が異なる表は全列×。同数なら変更行の操作後を列ごとに集約する。
  var different=evidence.SelectMany(e=>e.Different).ToHashSet();
@@ -403,25 +408,33 @@ public static class Engine {
 
  }
  // コピー用XMLそのものを読む。比較や色付けを別実装にすると、復元時・複数表・列別判定で表示がずれる。
- // ponytail: 表示値はRAMに保持する。変更行が大量でメモリ不足になる場合はXMLのページ単位読み取りへ移す。
+ // shortcut: 表示値はRAMに保持する。変更行が大量でメモリ不足になる場合はXMLのページ単位読み取りへ移す。
  public static EvidencePreview ReadPreview(string spreadsheetXml) {
   var rows=new List<PreviewCell[]>();var colors=new Dictionary<string,string>(StringComparer.Ordinal);var columns=0;
   using var reader=XmlReader.Create(new StringReader(spreadsheetXml),new XmlReaderSettings{DtdProcessing=DtdProcessing.Prohibit,XmlResolver=null});
   const string ns="urn:schemas-microsoft-com:office:spreadsheet";
-  while(reader.Read()) {
-   if(reader.NodeType!=XmlNodeType.Element||reader.NamespaceURI!=ns)continue;
-   if(reader.LocalName=="Style") {
+  List<PreviewCell>? cells=null;var color="#ffffff";var value="";
+  // セルごとのReadSubtreeは大量の一時オブジェクトを作るため、同じReaderで終端まで走査する。
+  while(!reader.EOF) {
+   if(reader.NamespaceURI==ns&&reader.NodeType==XmlNodeType.Element&&reader.LocalName=="Style") {
     var id=reader.GetAttribute("ID",ns);using var style=reader.ReadSubtree();
     while(style.Read())if(style.NodeType==XmlNodeType.Element&&style.LocalName=="Interior"&&id!=null)colors[id]=style.GetAttribute("Color",ns)??"#ffffff";
-   }else if(reader.LocalName=="Row") {
-    var cells=new List<PreviewCell>();using var row=reader.ReadSubtree();
-    while(row.Read())if(row.NodeType==XmlNodeType.Element&&row.LocalName=="Cell") {
-     var color=colors.GetValueOrDefault(row.GetAttribute("StyleID",ns)??"","#ffffff");var value="";using var cell=row.ReadSubtree();
-     while(cell.Read())if(cell.NodeType==XmlNodeType.Element&&cell.LocalName=="Data")value=cell.ReadElementContentAsString();
-     cells.Add(new(value,color));
+   }else if(reader.NamespaceURI==ns) {
+    if(reader.NodeType==XmlNodeType.Element&&reader.LocalName=="Row") {
+     cells=new();if(reader.IsEmptyElement){rows.Add([]);cells=null;}
+    }else if(cells!=null) {
+     if(reader.NodeType==XmlNodeType.Element&&reader.LocalName=="Cell") {
+      color=colors.GetValueOrDefault(reader.GetAttribute("StyleID",ns)??"","#ffffff");value="";
+      if(reader.IsEmptyElement)cells.Add(new(value,color));
+     }else if(reader.NodeType==XmlNodeType.Element&&reader.LocalName=="Data") {
+      value=reader.ReadElementContentAsString();continue;
+     }else if(reader.NodeType==XmlNodeType.EndElement&&reader.LocalName=="Cell")cells.Add(new(value,color));
+     else if(reader.NodeType==XmlNodeType.EndElement&&reader.LocalName=="Row") {
+      columns=Math.Max(columns,cells.Count);rows.Add(cells.ToArray());cells=null;
+     }
     }
-    columns=Math.Max(columns,cells.Count);rows.Add(cells.ToArray());
    }
+   reader.Read();
   }
   return new(rows.ToArray(),columns);
  }

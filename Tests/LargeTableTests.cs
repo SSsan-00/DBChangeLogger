@@ -51,6 +51,17 @@ public sealed class LargeTableTests
             if(name=="wide") {
                 var changes=Engine.Compare(before,afterSnapshot,before,afterSnapshot,spec);
                 Measure("wide-export",()=>Engine.Render(columns,changes,spec,before,afterSnapshot,before,afterSnapshot,true).SpreadsheetXml);
+                var xml=Engine.Render(columns,changes,spec,before,afterSnapshot,before,afterSnapshot,true).SpreadsheetXml;
+                Measure("wide-preview",()=>{
+                    var preview=Engine.ReadPreview(xml);
+                    return $"{preview.Rows.Length}/{preview.ColumnCount}/{preview.Rows[3][2].Value}/{preview.Rows[^1][2].Value}";
+                });
+                if(OperatingSystem.IsWindows()) {
+                    var path=Path.Combine(Path.GetTempPath(),Guid.NewGuid()+".bin");
+                    var session=new SavedSession(5,"benchmark",name,"","",[],spec,spec,before,before,xml,[],"","",Targets:[new(spec,spec,before,before)]);
+                    try {Measure("wide-save",()=>{SessionStore.Save(path,session);return new FileInfo(path).Length.ToString(CultureInfo.InvariantCulture);});}
+                    finally {File.Delete(path);}
+                }
             }
         }
         foreach(var d in new[]{DemoEvidence.Create(),DemoEvidence.CreateSingleUpdate()}.Concat(DemoEvidence.CreateMultiple())) {

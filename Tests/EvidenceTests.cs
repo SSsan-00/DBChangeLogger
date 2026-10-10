@@ -35,7 +35,7 @@ public sealed class EvidenceTests
         var wideAfter=wideBefore with{Rows=new(){["1"]=columns.Select(_=>(string?)"=1+1").ToArray()}};
         var spec=new TableSpec("public","wide",["col0"],[]);
         var wide=Engine.ReadPreview(Engine.Render(columns,Engine.Compare(wideBefore,wideAfter,wideBefore,wideAfter,spec),spec,wideBefore,wideAfter,wideBefore,wideAfter,true).SpreadsheetXml);
-        Assert.AreEqual(402,wide.ColumnCount);Assert.AreEqual("=1+1",wide.Rows[2][401].Value);Assert.AreEqual("#fff2cc",wide.Rows[2][401].Color);
+        Assert.AreEqual(402,wide.ColumnCount);var wideRow=wide.Rows.First(r=>r.Length==402&&r[0].Value=="PostgreSQL"&&r[401].Value=="=1+1");Assert.AreEqual("#fff2cc",wideRow[401].Color);
     }
 
     [TestMethod]
@@ -89,7 +89,7 @@ public sealed class EvidenceTests
         Assert.IsFalse(output.Text.Contains("対象: "+d.Spec.Schema+"."));
         Assert.IsFalse(output.Text.Contains("黄色=変更 / 赤=DB間不一致 / NULL・空文字は明示"));
         Assert.IsFalse(output.Text.Contains("PG 前")||output.Text.Contains("SQL Server 前"));
-        Assert.AreEqual(15, output.Text.Split('\n', StringSplitOptions.RemoveEmptyEntries).Length);
+        Assert.AreEqual(30, output.Text.Split('\n', StringSplitOptions.RemoveEmptyEntries).Length);
     }
 
     [TestMethod]
@@ -98,9 +98,9 @@ public sealed class EvidenceTests
         var d=DemoEvidence.Create();var changes=Engine.Compare(d.PgBefore,d.PgAfter,d.SqlBefore,d.SqlAfter,d.Spec);
         var xml=XDocument.Parse(Engine.Render(d.PgBefore.Columns,changes,d.Spec,d.PgBefore,d.PgAfter,d.SqlBefore,d.SqlAfter).SpreadsheetXml);
         XNamespace ss="urn:schemas-microsoft-com:office:spreadsheet";
-        var allRows=xml.Descendants(ss+"Row").Skip(3).Select(r=>r.Descendants(ss+"Data").Select(c=>c.Value).ToArray()).ToArray();
+        var allRows=AfterRows(xml).Skip(3).Select(r=>r.Descendants(ss+"Data").Select(c=>c.Value).ToArray()).ToArray();
         var rows=allRows.Where(r=>r[0]!="判定").ToArray();
-        var headers=xml.Descendants(ss+"Row").ElementAt(2).Descendants(ss+"Data").Select(c=>c.Value).ToArray();
+        var headers=AfterRows(xml).ElementAt(2).Descendants(ss+"Data").Select(c=>c.Value).ToArray();
         CollectionAssert.AreEqual(new[]{"DB","操作"}.Concat(d.PgBefore.Columns).ToArray(),headers);
         Assert.IsFalse(headers.Contains("主キー")||headers.Contains("時点"));
         Assert.AreEqual(11,rows.Length);
@@ -130,10 +130,10 @@ public sealed class EvidenceTests
         Assert.IsFalse(output.Text.Contains("除外列:"));
         Assert.IsFalse(output.Text.Contains("取得列:"));
         Assert.IsFalse(output.Text.Contains("変更行:")||output.Text.Contains("不一致:"));
-        Assert.AreEqual(6,XDocument.Parse(output.SpreadsheetXml).Descendants(XName.Get("Row","urn:schemas-microsoft-com:office:spreadsheet")).Count());
+        Assert.AreEqual(13,XDocument.Parse(output.SpreadsheetXml).Descendants(XName.Get("Row","urn:schemas-microsoft-com:office:spreadsheet")).Count());
         var selected=Engine.Render(before.Columns,changes,d.Spec with {Columns=["name","amount"]},before,after,before,d.SqlAfter);
         StringAssert.Contains(selected.Text,"取得列: id, name, amount");
-        Assert.AreEqual(7,XDocument.Parse(selected.SpreadsheetXml).Descendants(XName.Get("Row","urn:schemas-microsoft-com:office:spreadsheet")).Count());
+        Assert.AreEqual(14,XDocument.Parse(selected.SpreadsheetXml).Descendants(XName.Get("Row","urn:schemas-microsoft-com:office:spreadsheet")).Count());
     }
 
     [TestMethod]
@@ -146,8 +146,8 @@ public sealed class EvidenceTests
         {
             var changes=Engine.Compare(pb,pa,sb,sa,d.Spec);
             XNamespace ss="urn:schemas-microsoft-com:office:spreadsheet";
-            var rows=XDocument.Parse(Engine.Render(pb.Columns,changes,d.Spec,pb,pa,sb,sa).SpreadsheetXml)
-                .Descendants(ss+"Row").Skip(2).Take(2).Select(r=>r.Descendants(ss+"Data").Select(c=>c.Value).ToArray()).ToArray();
+            var rows=AfterRows(XDocument.Parse(Engine.Render(pb.Columns,changes,d.Spec,pb,pa,sb,sa).SpreadsheetXml))
+                .Skip(2).Take(2).Select(r=>r.Descendants(ss+"Data").Select(c=>c.Value).ToArray()).ToArray();
             Assert.AreEqual(2,rows.Length);
             var counterpart=rows.Single(r=>r[0]==unchangedDb);
             CollectionAssert.AreEqual(new[]{unchangedDb,"変更なし"},counterpart.Take(2).ToArray());
@@ -167,12 +167,12 @@ public sealed class EvidenceTests
         XNamespace ss="urn:schemas-microsoft-com:office:spreadsheet";
         var xml=XDocument.Parse(Engine.CombineSpreadsheetXml([first,second]));
         Assert.AreEqual(1,xml.Descendants(ss+"Worksheet").Count());Assert.AreEqual(1,xml.Descendants(ss+"Styles").Count());
-        var rows=xml.Descendants(ss+"Row").Select(r=>r.Descendants(ss+"Data").Select(c=>c.Value).ToArray()).ToArray();
-        Assert.AreEqual(11,rows.Length);Assert.AreEqual(0,rows[5].Length);
-        Assert.AreEqual("対象: "+d.Spec.Name,rows[0][0]);Assert.AreEqual("対象: orders",rows[6][0]);
-        CollectionAssert.AreEqual(new[]{"DB","操作","id","status"},rows[7]);
+        var rows=AfterRows(xml).Select(r=>r.Descendants(ss+"Data").Select(c=>c.Value).ToArray()).ToArray();
+        Assert.AreEqual(10,rows.Length);
+        Assert.AreEqual("対象: "+d.Spec.Name,rows[0][0]);Assert.AreEqual("対象: orders",rows[5][0]);
+        CollectionAssert.AreEqual(new[]{"DB","操作","id","status"},rows[6]);
         Assert.AreEqual(2,rows.Count(r=>r.FirstOrDefault()=="判定"));
-        Assert.AreEqual("商品A",rows[2][3]);Assert.AreEqual("完了",rows[8][3]);Assert.AreEqual("受付",before.Rows["[\"1\"]"][1]);
+        Assert.AreEqual("商品A",rows[2][3]);Assert.AreEqual("完了",rows[7][3]);Assert.AreEqual("受付",before.Rows["[\"1\"]"][1]);
         Assert.IsTrue(xml.Descendants(ss+"Data").All(c=>(string?)c.Attribute(ss+"Type")=="String"));
         using var canceled=new CancellationTokenSource();canceled.Cancel();
         Assert.ThrowsExactly<OperationCanceledException>(()=>Engine.CombineSpreadsheetXml([first,second],canceled.Token));
@@ -201,7 +201,7 @@ public sealed class EvidenceTests
         Assert.IsTrue(document.Descendants(ss + "Data").All(d => (string?)d.Attribute(ss + "Type") == "String"));
         Assert.IsFalse(document.Descendants().Attributes(ss + "Formula").Any());
         Assert.IsTrue(document.Descendants(ss + "Data").Any(d => d.Value == "  前後空白  "));
-        Assert.AreEqual(15, document.Descendants(ss + "Row").Count());
+        Assert.AreEqual(30, document.Descendants(ss + "Row").Count());
     }
 
     [TestMethod]
@@ -246,8 +246,109 @@ public sealed class EvidenceTests
         var sql=two with{Rows=new(two.Rows){["[\"2\"]"]=["2","商品A","15"]}};
         Assert.IsTrue(Engine.Compare(two,pg,two,sql,d.Spec).All(e=>!e.Match));
     }
+    [TestMethod]
+    public void BeforeAndAfterTablesPreserveValuesColorsAndTheSameChangedRowOrder()
+    {
+        var d=DemoEvidence.Create();var changes=Engine.Compare(d.PgBefore,d.PgAfter,d.SqlBefore,d.SqlAfter,d.Spec);
+        var preview=Engine.ReadPreview(Engine.Render(d.PgBefore.Columns,changes,d.Spec,d.PgBefore,d.PgAfter,d.SqlBefore,d.SqlAfter,true).SpreadsheetXml);
+        var before=StageRows(preview,"操作前");var after=StageRows(preview,"操作後");
+        Assert.AreEqual(11,before.Length);Assert.AreEqual(before.Length,after.Length);
+        Assert.AreEqual(2,preview.Rows.Count(r=>r.FirstOrDefault()?.Value=="DB"));
+        Assert.AreEqual(1,preview.Rows.Count(r=>r.FirstOrDefault()?.Value.StartsWith("対象:")==true));
+        Assert.AreEqual(1,preview.Rows.Count(r=>r.FirstOrDefault()?.Value.StartsWith("除外列:")==true));
+        Assert.AreEqual("判定",preview.Rows[^1][0].Value);
+        var expected=changes.Where(e=>e.Pg.Operation!="変更なし").Select(e=>e.Pg)
+            .Concat(changes.Where(e=>e.Sql.Operation!="変更なし").Select(e=>e.Sql)).ToArray();
+        for(var r=0;r<expected.Length;r++) {
+            var c=expected[r];Assert.AreEqual(r<6?"PostgreSQL":"SQL Server",before[r][0].Value);
+            Assert.AreEqual(before[r][0].Value,after[r][0].Value);Assert.AreEqual(c.Operation,before[r][1].Value);
+            for(var col=0;col<d.PgBefore.Columns.Length;col++) {
+                string Display(string?[]? values)=>values==null?"〈行なし〉":values[col]==null?"〈NULL〉":values[col]==""?"〈空文字〉":values[col]!.Replace("\r","\\r").Replace("\n","\\n").Replace("\t","\\t");
+                Assert.AreEqual(Display(c.Before),before[r][col+2].Value);Assert.AreEqual(Display(c.After),after[r][col+2].Value);
+                var color=c.Operation=="追加"?"#ddebf7":c.Operation=="削除"?"#dddddd":c.Changed.Contains(col)?"#fff2cc":"#ffffff";
+                Assert.AreEqual(color,before[r][col+2].Color);Assert.AreEqual(color,after[r][col+2].Color);
+            }
+        }
+    }
+
+    [TestMethod]
+    public void UnknownBeforeUpdatesRemainDistinctFromAbsentRowsAndDbNulls()
+    {
+        var columns=new[]{"id","name","amount"};var spec=new TableSpec("public","heap",[],[],AutoMatch:true);
+        Snapshot Heap(params string?[][] rows)=>new(columns,rows.Select((r,i)=>(r,i)).ToDictionary(x=>"row:"+x.i,x=>x.r),DateTimeOffset.UnixEpoch,true);
+        var before=Heap(["1","A","10"],["2","B","10"]);var after=Heap(["1","B","20"],["2","A","20"]);
+        var changes=Engine.Compare(before,after,before,after,spec);
+        Assert.IsTrue(changes.All(e=>e.Pg.Before==null&&e.Pg.Operation=="更新"));
+        var preview=Engine.ReadPreview(Engine.Render(columns,changes,spec,before,after,before,after,true).SpreadsheetXml);
+        Assert.IsTrue(StageRows(preview,"操作前").All(r=>r.Skip(2).All(c=>c.Value=="〈対応不明〉"&&c.Color=="#fff2cc")));
+        Assert.IsFalse(StageRows(preview,"操作後").SelectMany(r=>r).Any(c=>c.Value=="〈対応不明〉"));
+        Assert.IsTrue(preview.Rows[^1].Skip(2).All(c=>c.Value=="◯"));
+    }
+
+    [TestMethod]
+    public void BeforeTablesUseAfterSortOrderAndPreserveUnchangedDbPlaceholders()
+    {
+        var columns=new[]{"id","code","amount"};var spec=new TableSpec("public","sorted",["id"],[],AutoMatch:true);
+        var before=new Snapshot(columns,new(){["1"]=["1","A","10"],["2"]=["2","B","10"]},DateTimeOffset.UnixEpoch);
+        var after=before with{Rows=new(){["1"]=["1","Z","20"],["2"]=["2","C","30"]}};
+        var changes=Engine.Compare(before,after,before,before,spec);
+        var preview=Engine.ReadPreview(Engine.Render(columns,changes,spec,before,after,before,before,true).SpreadsheetXml);
+        var pre=StageRows(preview,"操作前");var post=StageRows(preview,"操作後");
+        CollectionAssert.AreEqual(new[]{"2","1"},post.Where(r=>r[0].Value=="PostgreSQL").Select(r=>r[2].Value).ToArray());
+        CollectionAssert.AreEqual(post.Select(r=>r[2].Value).ToArray(),pre.Select(r=>r[2].Value).ToArray());
+        Assert.AreEqual("B",pre[0][3].Value);Assert.AreEqual("C",post[0][3].Value);
+        Assert.AreEqual(1,preview.Rows.Count(r=>r.FirstOrDefault()?.Value.StartsWith("ソート:")==true));
+        foreach(var rows in new[]{pre,post}) {
+            var placeholder=rows.Single(r=>r[0].Value=="SQL Server");Assert.AreEqual("変更なし",placeholder[1].Value);
+            Assert.IsTrue(placeholder.Skip(2).All(c=>c.Value==""&&c.Color=="#ffffff"));
+        }
+        Assert.IsTrue(preview.Rows[^1].Skip(2).All(c=>c.Value=="×"));
+    }
+
+    [TestMethod]
+    public void BeforeOnlyOversizeCellsAndFullEvidenceRowLimitsAreValidated()
+    {
+        var spec=new TableSpec("public","limits",["id"],[]);var columns=new[]{"id","value"};
+        var before=new Snapshot(columns,new(){["1"]=["1",new string('x',32768)]},DateTimeOffset.UnixEpoch);
+        var after=before with{Rows=new(){["1"]=["1","short"]}};
+        var changes=Engine.Compare(before,after,before,after,spec);
+        Assert.ThrowsExactly<InvalidOperationException>(()=>Engine.Render(columns,changes,spec,before,after,before,after,true));
+        var repeated=Enumerable.Repeat(changes[0],262142).ToList();var canceled=new CancellationToken(true);
+        // 1,048,576行ちょうどなら描画のキャンセルへ進み、メタデータを1行増やすと描画前に拒否する。
+        Assert.ThrowsExactly<OperationCanceledException>(()=>Engine.Render(columns,repeated,spec with{Ignored=["value"]},before,after,before,after,true,canceled));
+        Assert.ThrowsExactly<InvalidOperationException>(()=>Engine.Render(columns,repeated,spec with{Ignored=["value"],Columns=columns},before,after,before,after,true,canceled));
+        repeated.Add(changes[0]);Assert.ThrowsExactly<InvalidOperationException>(()=>Engine.Render(columns,repeated,spec,before,after,before,after,true,canceled));
+    }
+
+    static PreviewCell[][] StageRows(EvidencePreview preview,string stage)=>preview.Rows
+        .SkipWhile(r=>r.FirstOrDefault()?.Value!=stage).Skip(2)
+        .TakeWhile(r=>r.Length>1&&r[0].Value!="判定").ToArray();
+    [TestMethod]
+    public void PreviewPreservesEmptyRowsCellsAndRejectsDocumentTypes()
+    {
+        const string xml="<Workbook xmlns='urn:schemas-microsoft-com:office:spreadsheet'><Worksheet><Table><Row/><Row><Cell/><Cell><Data/></Cell><Cell><Data>00123</Data></Cell></Row><Row></Row></Table></Worksheet></Workbook>";
+        var preview=Engine.ReadPreview(xml);Assert.AreEqual(3,preview.Rows.Length);Assert.AreEqual(3,preview.ColumnCount);
+        Assert.AreEqual(0,preview.Rows[0].Length);Assert.AreEqual(0,preview.Rows[2].Length);
+        CollectionAssert.AreEqual(new[]{"","","00123"},preview.Rows[1].Select(c=>c.Value).ToArray());
+        Assert.IsTrue(preview.Rows[1].All(c=>c.Color=="#ffffff"));
+        Assert.ThrowsExactly<System.Xml.XmlException>(()=>Engine.ReadPreview("<!DOCTYPE Workbook [<!ENTITY x 'secret'>]>"+xml));
+    }
+
+    [TestMethod]
+    public void CombinedTablesCountTheSeparatorTowardTheExcelRowLimit()
+    {
+        string Table(int rows)=>"<Workbook xmlns='urn:schemas-microsoft-com:office:spreadsheet'><Styles/><Worksheet><Table>"+string.Concat(Enumerable.Repeat("<Row/>",rows))+"</Table></Worksheet></Workbook>";
+        var half=Table(524288);var shorter=Table(524287);
+        var accepted=Engine.CombineSpreadsheetXml([half,shorter]);
+        Assert.AreEqual(1048576,Engine.ReadPreview(accepted).Rows.Length);
+        Assert.ThrowsExactly<InvalidOperationException>(()=>Engine.CombineSpreadsheetXml([half,half]));
+    }
     static readonly XNamespace ss="urn:schemas-microsoft-com:office:spreadsheet";
-    static XElement[] Rows(Snapshot pb,Snapshot pa,Snapshot sb,Snapshot sa,TableSpec spec)=>XDocument.Parse(Engine.Render(pb.Columns,Engine.Compare(pb,pa,sb,sa,spec),spec,pb,pa,sb,sa).SpreadsheetXml).Descendants(ss+"Row").ToArray();
+    static XElement[] Rows(Snapshot pb,Snapshot pa,Snapshot sb,Snapshot sa,TableSpec spec)=>AfterRows(XDocument.Parse(Engine.Render(pb.Columns,Engine.Compare(pb,pa,sb,sa,spec),spec,pb,pa,sb,sa).SpreadsheetXml));
+    static XElement[] AfterRows(XDocument xml) {
+        var rows=xml.Descendants(ss+"Row").ToArray();var before=false;
+        return rows.Where(r=>{var value=r.Element(ss+"Cell")?.Element(ss+"Data")?.Value;if(value=="操作前"){before=true;return false;}if(value=="操作後"){before=false;return false;}return !before&&r.HasElements;}).ToArray();
+    }
     static string? Style(XElement row,int index)=>(string?)row.Elements(ss+"Cell").ElementAt(index).Attribute(ss+"StyleID");
     static string? Style(XElement cell)=>(string?)cell.Attribute(ss+"StyleID");
 

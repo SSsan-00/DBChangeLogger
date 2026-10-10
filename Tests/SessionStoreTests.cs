@@ -7,6 +7,24 @@ namespace DbEvidenceTests;
 public class SessionStoreTests {
  [TestMethod]
  [SupportedOSPlatform("windows")]
+ public void OldAndTwoTableEvidenceRestoreWithoutReformatting() {
+  if(!OperatingSystem.IsWindows()){Assert.Inconclusive("Windows DPAPIの検証です。");return;}
+  var d=DemoEvidence.CreateSingleUpdate();var path=Path.Combine(Path.GetTempPath(),Guid.NewGuid()+".bin");
+  var current=Engine.Render(d.PgBefore.Columns,Engine.Compare(d.PgBefore,d.PgAfter,d.SqlBefore,d.SqlAfter,d.Spec),d.Spec,d.PgBefore,d.PgAfter,d.SqlBefore,d.SqlAfter,true).SpreadsheetXml;
+  const string old="<Workbook xmlns='urn:schemas-microsoft-com:office:spreadsheet'><Worksheet><Table><Row><Cell><Data>旧形式</Data></Cell></Row></Table></Worksheet></Workbook>";
+  try {
+   foreach(var xml in new[]{old,current}) {
+    var state=new SavedSession(5,"hash",d.Spec.Name,"","",[],d.Spec,d.Spec,d.PgBefore,d.SqlBefore,xml,[],"","",Targets:[new(d.Spec,d.Spec,d.PgBefore,d.SqlBefore)]);
+    SessionStore.Save(path,state);var restored=SessionStore.Load(path);Assert.AreEqual(xml,restored.SpreadsheetXml);
+    CollectionAssert.AreEqual(d.PgBefore.Rows["[\"1\"]"],restored.Targets![0].PgBefore!.Rows["[\"1\"]"]);
+    var preview=Engine.ReadPreview(restored.SpreadsheetXml!);
+    Assert.AreEqual(xml==old?0:1,preview.Rows.Count(r=>r.FirstOrDefault()?.Value=="操作前"));
+    Assert.AreEqual(xml==old?0:1,preview.Rows.Count(r=>r.FirstOrDefault()?.Value=="操作後"));
+   }
+  }finally{File.Delete(path);}
+ }
+ [TestMethod]
+ [SupportedOSPlatform("windows")]
  public void SessionRoundTripPreservesSnapshotsFiltersAndResultAndRejectsTampering() {
   if(!OperatingSystem.IsWindows()){Assert.Inconclusive("Windows DPAPIの検証です。");return;}
   var d=DemoEvidence.Create();var path=Path.Combine(Path.GetTempPath(),Guid.NewGuid()+".bin");
